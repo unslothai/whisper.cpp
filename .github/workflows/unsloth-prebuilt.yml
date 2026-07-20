@@ -103,10 +103,12 @@ jobs:
 
           # Check out the exact commit and stamp cmake/build-info.cmake so the
           # server reports a real version (the tarball ships without .git, where
-          # build-info falls back to BUILD_NUMBER 0 / "unknown"). Append the
-          # Unsloth fingerprint to BUILD_TARGET so it shows in --version and in
-          # `strings` on every binary. Keep the MARK byte-identical to the
-          # assemble verify gate.
+          # build-info falls back to BUILD_NUMBER 0 / "unknown"). Unlike
+          # llama.cpp, whisper.cpp does NOT compile BUILD_TARGET into whisper-server
+          # (it only feeds BUILD_NUMBER/COMMIT into install-time cmake config
+          # files), so the Unsloth fingerprint cannot be baked into the binary
+          # here; package_bundle.py carries it in every bundle's BUILD_INFO.txt,
+          # which the assemble verify gate then checks.
           git init -q whisper-src
           cd whisper-src
           git remote add origin https://github.com/ggml-org/whisper.cpp.git
@@ -119,9 +121,6 @@ jobs:
           grep -q "set(BUILD_NUMBER ${COUNT})" cmake/build-info.cmake \
             && grep -q "set(BUILD_COMMIT \"${SHORT}\")" cmake/build-info.cmake \
             || { echo "cmake/build-info.cmake lost its expected fallback lines" >&2; exit 1; }
-          grep -q 'set(BUILD_TARGET' cmake/build-info.cmake \
-            || { echo "cmake/build-info.cmake has no BUILD_TARGET line to stamp" >&2; exit 1; }
-          printf '\n# Unsloth fingerprint: shows in --version and strings.\nset(BUILD_TARGET "${BUILD_TARGET} (Compiled by the Unsloth team)")\n' >> cmake/build-info.cmake
           cd ..
 
           tar -czf "${RUNNER_TEMP}/whisper.cpp-source-${TAG}.tar.gz" \
@@ -295,6 +294,10 @@ jobs:
           SHA='${{ needs.resolve.outputs.commit }}'
           cp "dist/whisper.cpp-source-${TAG}.tar.gz" "dist/whisper.cpp-source-commit-${SHA}.tar.gz"
 
+      # Branding gate: every bundle must carry the Unsloth fingerprint that
+      # package_bundle.py writes into its BUILD_INFO.txt (whisper-server has no
+      # compiled build-info string to bake it into, unlike llama.cpp). MARK must
+      # stay byte-identical to that string. grep -ar scans recursively.
       - name: Verify Unsloth fingerprint in every bundle
         run: |
           set -euo pipefail

@@ -355,7 +355,14 @@ def write_metadata(stage: Path, strategy: PlatformStrategy, cfg: dict, asset: st
     }
     (stage / INFO_NAME).write_text(json.dumps(info, indent=2))
 
+    # First line is the Unsloth fingerprint. whisper.cpp does not compile a
+    # build-info string into whisper-server (unlike llama.cpp's LLAMA_BUILD_TARGET),
+    # so the brand cannot be baked into the binary; it is carried here in every
+    # bundle instead. The assemble job's "Verify Unsloth fingerprint" gate greps
+    # each bundle for this exact string, so keep it byte-identical to that MARK.
     build_info = [
+        "Compiled by the Unsloth team",
+        "",
         f"whisper.cpp upstream tag: {cfg['upstream_tag']}",
         f"packaging tag: {cfg['tag']}",
         f"os: {strategy.name}",
