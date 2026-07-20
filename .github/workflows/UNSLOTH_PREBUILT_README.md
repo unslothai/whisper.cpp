@@ -214,11 +214,14 @@ freshly built archive on its build runner:
    and a non-empty JSON `text`.
 4. Repeat step 3 with `--no-gpu` so the CPU fallback path is proven.
 
-On GPU-less GitHub-hosted runners the P1 build jobs run `validate_bundle.py
---cpu-only` (steps 1, 2, and one `--no-gpu` transcription), which proves the
-bundle loads and transcribes on CPU. **Real GPU inference** (step 3 with a live
-device) requires a self-hosted accelerator runner and is not wired into the
-default matrix - see below.
+This gate runs on the **P0** jobs (CPU Linux x64/arm64, Windows x64, macOS
+x64/arm64), whose native runners can execute the binary. The **P1 GPU** jobs
+(CUDA / ROCm / Vulkan) are built, packaged and uploaded **un-run**, exactly like
+unslothai/llama.cpp's GPU release jobs: their GitHub-hosted build runners have no
+GPU and no NVIDIA/AMD driver, so a co-located GPU backend module cannot resolve
+its host driver there and there is nothing meaningful to validate. **Real GPU
+inference** (step 3 with a live device) requires a self-hosted accelerator runner
+and is not wired into the default matrix - see below.
 
 ## Runners and secrets you must provide
 
@@ -236,7 +239,8 @@ Everything below is the repo owner's to supply; confirm before relying on it.
   self-hosted runners labelled for each accelerator (e.g. an NVIDIA runner, an
   AMD ROCm runner, a Vulkan-capable runner) and add a job that downloads the
   built bundle artifact and runs `validate_bundle.py --gpu` on that runner.
-  Until then GPU bundles are validated in CPU-fallback mode only.
+  Until then GPU bundles ship without a build-time runtime gate (built and
+  packaged only), as with unslothai/llama.cpp.
 - **Code signing / notarization is NOT configured.** macOS bundles are unsigned
   and unnotarized, and Windows binaries are unsigned. If Studio needs signed
   binaries, add your Apple Developer ID / Authenticode secrets and signing steps
