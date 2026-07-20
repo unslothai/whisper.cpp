@@ -176,7 +176,13 @@ class MacOSStrategy(PlatformStrategy):
         return deps
 
     def backend_patterns(self) -> list[str]:
-        return ["libwhisper*.dylib", "libggml*.dylib"]
+        # ggml builds the shared LIBRARIES (libwhisper/libggml/libggml-base) as
+        # .dylib, but the dlopen'd backend MODULES (libggml-cpu-<variant>, metal,
+        # blas ...) as .so on macOS: they are CMake MODULE libraries, which keep
+        # the .so suffix, and ggml's loader searches for ".so" on non-Windows
+        # (ggml/src/ggml-backend-reg.cpp backend_filename_extension). Ship both
+        # or a dynamic bundle registers 0 backends and aborts at whisper_init.
+        return ["libwhisper*.dylib", "libggml*.dylib", "libggml*.so"]
 
     def archive(self, stage: Path, out_path: Path) -> None:
         _tar_deterministic(stage, out_path)
