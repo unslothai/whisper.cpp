@@ -24,20 +24,35 @@ name: Unsloth whisper prebuilt (full release)
 # change what a given packaging tag shipped.
 
 on:
+  # Auto-stream from mainline whisper.cpp: every 5 days at ~3PM San Francisco
+  # (22:41 UTC; a fixed offset, not DST-adjusted, so ~3:41PM PDT / ~2:41PM PST).
+  # `*/5` fires on days 1,6,11,16,21,26,31, so the spacing resets at each month
+  # boundary -- close enough given upstream tags land weeks apart. A scheduled
+  # run resolves the newest aged upstream release and publishes it; if that
+  # release is already published the run is a cheap no-op (resolve sets
+  # exists=true and every build/assemble job is skipped). Manual dispatch can
+  # still build or publish any tag on demand.
+  schedule:
+    - cron: '41 22 */5 * *'
   workflow_dispatch:
     inputs:
       upstream_tag:
-        description: 'Upstream ggml-org/whisper.cpp tag to build (e.g. v1.9.1)'
-        default: 'v1.9.1'
-        required: true
+        description: 'Upstream ggml-org/whisper.cpp tag to build, or "latest" to resolve the newest aged release'
+        default: 'latest'
+        required: false
         type: string
       packaging_suffix:
         description: 'Packaging suffix appended to the tag: <upstream_tag>-<suffix>'
         default: 'unsloth.1'
         required: true
         type: string
+      min_age_hours:
+        description: 'For "latest": only build an upstream release public for at least this many hours (blank = 6)'
+        default: ''
+        required: false
+        type: string
       publish:
-        description: 'Publish a GitHub Release (off = build + upload artifacts only)'
+        description: 'Publish a GitHub Release (off = build + upload artifacts only). Scheduled runs always publish.'
         default: false
         required: false
         type: boolean
@@ -46,7 +61,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.inputs.upstream_tag }}-${{ github.event.inputs.packaging_suffix }}
+  group: ${{ github.workflow }}-${{ github.event.inputs.upstream_tag || 'scheduled' }}-${{ github.event.inputs.packaging_suffix || 'auto' }}
   cancel-in-progress: false
 
 jobs:
@@ -73,8 +88,27 @@ jobs:
         id: r
         run: |
           set -euo pipefail
-          UT='${{ github.event.inputs.upstream_tag }}'
-          SUFFIX='${{ github.event.inputs.packaging_suffix }}'
+          UT='${{ github.event.inputs.upstream_tag || 'latest' }}'
+          SUFFIX='${{ github.event.inputs.packaging_suffix || 'unsloth.1' }}'
+          AGE_H='${{ github.event.inputs.min_age_hours }}'
+          [ -n "$AGE_H" ] || AGE_H=6
+
+          # Resolve "latest" (the default, and what every scheduled run uses) to
+          # the newest published upstream release that has been public for >=
+          # AGE_H hours -- a supply-chain aging window so a yanked or malicious
+          # upstream tag is not shipped the instant it appears. GitHub does not
+          # guarantee list order, so pick the max by published_at explicitly. An
+          # explicit vX.Y.Z tag (manual dispatch) skips the filter.
+          if [ "$UT" = "latest" ]; then
+            CUTOFF="$(date -u -d "-${AGE_H} hours" +%s)"
+            UT="$(gh api 'repos/ggml-org/whisper.cpp/releases?per_page=100' \
+              --jq "[.[] | select(.draft==false and .prerelease==false) | select((.published_at|fromdateiso8601) <= ${CUTOFF})] | max_by(.published_at|fromdateiso8601) | .tag_name")"
+            if [ -z "$UT" ] || [ "$UT" = "null" ]; then
+              echo "refusing: no ggml-org/whisper.cpp release older than ${AGE_H}h in the last 100 releases" >&2
+              exit 1
+            fi
+            echo "selected upstream ${UT} (aged >= ${AGE_H}h)"
+          fi
           printf '%s' "$UT" | grep -qE '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' \
             || { echo "refusing non-release upstream tag '$UT' (want vMAJOR.MINOR[.PATCH])" >&2; exit 1; }
           printf '%s' "$SUFFIX" | grep -qE '^[A-Za-z0-9._-]+$' \
@@ -320,7 +354,7 @@ jobs:
           echo "fingerprint verified in $checked bundles"
 
       - name: Verify P0 coverage before publish
-        if: ${{ inputs.publish && needs.resolve.outputs.exists != 'true' }}
+        if: ${{ (inputs.publish || github.event_name == 'schedule') && needs.resolve.outputs.exists != 'true' }}
         run: |
           set -eu
           TAG='${{ needs.resolve.outputs.tag }}'
@@ -359,7 +393,7 @@ jobs:
           retention-days: 7
 
       - name: Publish GitHub release (draft first, then atomic)
-        if: ${{ inputs.publish && needs.resolve.outputs.exists != 'true' }}
+        if: ${{ (inputs.publish || github.event_name == 'schedule') && needs.resolve.outputs.exists != 'true' }}
         run: |
           set -eux
           TAG='${{ needs.resolve.outputs.tag }}'
