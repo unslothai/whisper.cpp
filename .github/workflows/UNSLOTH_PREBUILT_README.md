@@ -51,8 +51,8 @@ Run the **Unsloth whisper prebuilt (full release)** workflow
 | `publish` | `false` | `false` builds + uploads workflow artifacts only; `true` publishes a GitHub Release |
 
 The `resolve` job dereferences `upstream_tag` to an **immutable commit SHA** and
-records it, then stamps `cmake/build-info.cmake` (build number, commit, and the
-`Compiled by the Unsloth team` fingerprint) and uploads the source tree once.
+records it, then stamps `cmake/build-info.cmake` (build number and commit) and
+uploads the source tree once.
 Every build child extracts that one tree, so a tag re-point upstream can never
 change what a packaging tag shipped. Bump `packaging_suffix` to
 `unsloth.2`, `unsloth.3`, ... for rebuilds of the same upstream tag.
@@ -134,7 +134,7 @@ Each release also carries:
 - `whisper-prebuilt-manifest.json`
 - `whisper-prebuilt-sha256.json`
 - `whisper.cpp-source-<tag>.tar.gz` and `whisper.cpp-source-commit-<sha>.tar.gz`
-  (the stamped source, so a source build reproduces the same fingerprinted binary)
+  (the stamped source, so a source build reproduces the same binary)
 
 ### Manifest schema (`whisper-prebuilt-manifest.json`)
 
@@ -200,6 +200,14 @@ speaks, so the installer can reject a server whose HTTP contract has drifted:
 Bump `version` (in `scripts/package_bundle.py`, `STUDIO_PROTOCOL`) on any
 breaking change to what Studio sends or expects back.
 
+### Accepted audio formats (`/inference`)
+
+Bundles decode WAV, MP3, FLAC and Ogg Vorbis (miniaudio + stb_vorbis). Ogg/WebM
+Opus (browser `MediaRecorder`, WhatsApp/Telegram voice notes) is not decodable
+and returns HTTP 400; transcode first:
+`ffmpeg -i in.opus -ar 16000 -ac 1 out.wav`. Studio is unaffected: it decodes
+with PyAV and posts WAV.
+
 ## CI validation gate
 
 Before a bundle is uploaded, `scripts/validate_bundle.py` runs against the
@@ -253,10 +261,11 @@ Everything below is the repo owner's to supply; confirm before relying on it.
 ## Trust and reproducibility
 
 - Every bundle must carry the `Compiled by the Unsloth team` fingerprint
-  (stamped into `BUILD_TARGET`); the orchestrator refuses to publish an
-  unbranded binary.
+  (carried in each bundle's `BUILD_INFO.txt`, written by `package_bundle.py`);
+  the orchestrator refuses to publish an unbranded bundle.
 - The stamped source tarballs are shipped as release assets so Studio's
-  source-build fallback reproduces the same fingerprinted binary.
+  source-build fallback reproduces the same binary (the `Compiled by the Unsloth
+  team` mark is a packaging-time bundle file, not part of the binary).
 - Consider enabling GitHub artifact attestations for supply-chain provenance;
   the same-origin sha256 index proves integrity, not authenticity, so Studio's
   in-tree pins remain the trust anchor.

@@ -143,7 +143,7 @@ jobs:
           WIN_CUDA_INCLUDE="$(jq -c '[.[] | select(.arch=="x64") | .runner="windows-2022"]' <<<"$CUDA_INCLUDE")"
           ROCM_MATRIX='{"gfx_target":["gfx1151","gfx1150","gfx120X","gfx110X","gfx103X","gfx90a","gfx908"]}'
           MACOS_INCLUDE='[
-            {"build":"arm64","runner":"macos-14",      "expect_arch":"arm64", "deploy_target":"14.0","accel":"metal","backend":"metal","defines":"-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON","shared":"OFF","static":"true"},
+            {"build":"arm64","runner":"macos-26",      "expect_arch":"arm64", "deploy_target":"14.0","accel":"metal","backend":"metal","defines":"-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON","shared":"OFF","static":"true"},
             {"build":"x64",  "runner":"macos-15-intel","expect_arch":"x86_64","deploy_target":"13.3","accel":"cpu",  "backend":"cpu",  "defines":"-DGGML_METAL=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON","shared":"ON","static":"false"}
           ]'
           MACOS_INCLUDE="$(jq -c . <<<"$MACOS_INCLUDE")"
@@ -320,7 +320,7 @@ jobs:
           echo "fingerprint verified in $checked bundles"
 
       - name: Verify P0 coverage before publish
-        if: ${{ (github.event_name == 'schedule' || inputs.publish) && needs.resolve.outputs.exists != 'true' }}
+        if: ${{ inputs.publish && needs.resolve.outputs.exists != 'true' }}
         run: |
           set -eu
           TAG='${{ needs.resolve.outputs.tag }}'
@@ -359,7 +359,7 @@ jobs:
           retention-days: 7
 
       - name: Publish GitHub release (draft first, then atomic)
-        if: ${{ (github.event_name == 'schedule' || inputs.publish) && needs.resolve.outputs.exists != 'true' }}
+        if: ${{ inputs.publish && needs.resolve.outputs.exists != 'true' }}
         run: |
           set -eux
           TAG='${{ needs.resolve.outputs.tag }}'

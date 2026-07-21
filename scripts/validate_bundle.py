@@ -182,7 +182,14 @@ def run_inference(server: Path, model: Path, audio: Path, bundle: Path, *,
             # A GPU run must have actually used a device; whisper-server logs the
             # backend it selected. Absence of a CUDA/Metal/ROCm/Vulkan device
             # line means it silently ran on CPU, which does not validate the GPU.
-            log = proc.stdout.read() if proc.stdout else ""
+            # Terminate first so the stdout pipe reaches EOF: reading a live
+            # server's stdout to EOF never returns and would hang the job.
+            proc.terminate()
+            try:
+                log = proc.communicate(timeout = 15)[0] or ""
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                log = proc.communicate()[0] or ""
             if not re.search(r"(CUDA|Metal|ROCm|HIP|Vulkan|GPU)", log, re.I):
                 print("WARNING: could not confirm a GPU device from server log; "
                       "inspect the accelerator runner output", file=sys.stderr)

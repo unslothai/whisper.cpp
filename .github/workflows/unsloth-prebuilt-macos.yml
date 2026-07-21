@@ -81,6 +81,11 @@ jobs:
           # pinned deployment target, so the binary loads on that macOS floor.
           MINOS="$(otool -l "$BIN" | awk '/LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX/{f=1} f&&/minos|version/{print $2; f=0}' | head -1)"
           echo "minos=$MINOS target=${{ matrix.deploy_target }}"
+          [ -n "$MINOS" ] || { echo "could not read minos from $BIN" >&2; exit 1; }
+          awk -v m="$MINOS" -v t="${{ matrix.deploy_target }}" 'BEGIN {
+            split(m, a, "."); split(t, b, ".")
+            exit (a[1] * 100 + a[2] > b[1] * 100 + b[2]) ? 1 : 0
+          }' || { echo "minos $MINOS exceeds deploy target ${{ matrix.deploy_target }}" >&2; exit 1; }
 
       - name: Package bundle
         env:

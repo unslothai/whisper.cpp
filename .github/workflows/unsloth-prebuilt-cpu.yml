@@ -16,8 +16,8 @@ name: "Unsloth whisper prebuilt: CPU"
 #     supports (SSE4.2 .. AVX-512). This is why the bundle ships co-located libs
 #     rather than one file: GGML_NATIVE=OFF alone does NOT lower the ISA floor
 #     (it only drops -march=native), so a single static x86 build would bake in
-#     an AVX2/Haswell-2013 floor and SIGILL on older CPUs. The sidecar already
-#     prepends the binary dir to LD_LIBRARY_PATH/PATH for the co-located libs.
+#     an AVX2/Haswell-2013 floor and SIGILL on older CPUs. The co-located libs
+#     resolve through the binary's $ORIGIN rpath (exe-dir search on Windows).
 #   arm64 (Linux arm64): STATIC single-file -- ARM has no x86-style variant set,
 #     so pin the broad armv8-a baseline (GGML_CPU_ARM_ARCH=armv8-a) and ship one
 #     self-contained binary.
