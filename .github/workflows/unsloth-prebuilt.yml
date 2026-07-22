@@ -11,6 +11,9 @@ name: Unsloth whisper prebuilt (full release)
 #   unsloth-prebuilt-cuda-windows.yml  -- Windows CUDA bundles (x64, matrix profiles)           [P1]
 #   unsloth-prebuilt-vulkan.yml        -- Vulkan bundles (Linux + Windows, x64)                 [P1]
 #   unsloth-prebuilt-rocm.yml          -- ROCm bundles (Linux + Windows, per gfx target)        [P1]
+#   unsloth-prebuilt-slim.yml          -- Slim bundles (Linux + Windows, x64 + arm64) compiled  [P1]
+#                                         against the paired unslothai/llama.cpp release's ggml;
+#                                         they ship NO libggml* (the llama install provides it)
 #
 # Tiered atomicity: the `assemble` job hard-requires the P0 children (CPU +
 # macOS) and only best-effort waits on the P1 GPU children. A P1 failure does
@@ -46,6 +49,11 @@ on:
         default: 'unsloth.1'
         required: true
         type: string
+      llama_tag:
+        description: 'Paired unslothai/llama.cpp release tag for slim bundles (blank = newest published llama release)'
+        default: ''
+        required: false
+        type: string
       min_age_hours:
         description: 'For "latest": only build an upstream release public for at least this many hours (blank = 6)'
         default: ''
@@ -77,6 +85,7 @@ jobs:
       repo: ${{ steps.r.outputs.repo }}
       source_artifact: ${{ steps.r.outputs.source_artifact }}
       exists: ${{ steps.r.outputs.exists }}
+      llama_tag: ${{ steps.r.outputs.llama_tag }}
       cuda_matrix: ${{ steps.r.outputs.cuda_matrix }}
       win_cuda_matrix: ${{ steps.r.outputs.win_cuda_matrix }}
       rocm_matrix: ${{ steps.r.outputs.rocm_matrix }}
@@ -115,6 +124,24 @@ jobs:
             || { echo "refusing packaging suffix '$SUFFIX'" >&2; exit 1; }
           TAG="${UT}-${SUFFIX}"
           REPO="$GITHUB_REPOSITORY"
+
+          # Slim bundles are compiled against the ggml tree of a PAIRED
+          # unslothai/llama.cpp release (the llama install provides every ggml
+          # library at runtime). A blank llama_tag -- including every scheduled
+          # run -- resolves to the newest PUBLISHED llama release, same style
+          # as the upstream-tag resolution above.
+          LT='${{ github.event.inputs.llama_tag }}'
+          if [ -z "$LT" ]; then
+            LT="$(gh api 'repos/unslothai/llama.cpp/releases?per_page=30' \
+              --jq '[.[] | select(.draft==false and .prerelease==false)] | max_by(.published_at|fromdateiso8601) | .tag_name')"
+            if [ -z "$LT" ] || [ "$LT" = "null" ]; then
+              echo "refusing: no published unslothai/llama.cpp release found for slim pairing" >&2
+              exit 1
+            fi
+            echo "selected paired llama release ${LT}"
+          fi
+          printf '%s' "$LT" | grep -qE '^[A-Za-z0-9._-]+$' \
+            || { echo "refusing llama tag '$LT'" >&2; exit 1; }
 
           # Dereference the tag to an exact commit (annotated tags resolve to the
           # tag object first, then to the commit it points at).
@@ -189,12 +216,13 @@ jobs:
             echo "repo=$REPO"
             echo "source_artifact=whisper-source-${TAG}"
             echo "exists=$EXISTS"
+            echo "llama_tag=$LT"
             echo "cuda_matrix={\"include\":$CUDA_INCLUDE}"
             echo "win_cuda_matrix={\"include\":$WIN_CUDA_INCLUDE}"
             echo "rocm_matrix=$ROCM_MATRIX"
             echo "macos_matrix={\"include\":$MACOS_INCLUDE}"
           } >> "$GITHUB_OUTPUT"
-          echo "Resolved $UT -> $TAG ($COMMIT); release exists=$EXISTS"
+          echo "Resolved $UT -> $TAG ($COMMIT); release exists=$EXISTS; paired llama=$LT"
 
       - name: Upload stamped source artifact
         if: ${{ steps.r.outputs.exists != 'true' || github.event_name == 'workflow_dispatch' }}
@@ -281,9 +309,22 @@ jobs:
       source_artifact: ${{ needs.resolve.outputs.source_artifact }}
       matrix: ${{ needs.resolve.outputs.rocm_matrix }}
 
+  build-slim:
+    name: Slim
+    needs: resolve
+    if: ${{ needs.resolve.outputs.exists != 'true' || github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/unsloth-prebuilt-slim.yml
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+      upstream_tag: ${{ needs.resolve.outputs.upstream_tag }}
+      repo: ${{ needs.resolve.outputs.repo }}
+      commit: ${{ needs.resolve.outputs.commit }}
+      source_artifact: ${{ needs.resolve.outputs.source_artifact }}
+      llama_tag: ${{ needs.resolve.outputs.llama_tag }}
+
   assemble:
     name: Assemble metadata + publish
-    needs: [resolve, build-cpu, build-macos, build-cuda, build-windows-cuda, build-vulkan, build-rocm]
+    needs: [resolve, build-cpu, build-macos, build-cuda, build-windows-cuda, build-vulkan, build-rocm, build-slim]
     # Tiered gate: run whenever the P0 children (CPU + macOS) succeeded, even if
     # a P1 GPU child failed or was skipped. A P0 failure short-circuits here and
     # nothing is published.
@@ -379,7 +420,8 @@ jobs:
             --tag '${{ needs.resolve.outputs.tag }}' \
             --upstream-tag '${{ needs.resolve.outputs.upstream_tag }}' \
             --commit '${{ needs.resolve.outputs.commit }}' \
-            --source-repo "$GITHUB_REPOSITORY"
+            --source-repo "$GITHUB_REPOSITORY" \
+            --llama-tag '${{ needs.resolve.outputs.llama_tag }}'
           # Drop the per-asset .entry.json sidecars: the manifest supersedes them.
           rm -f dist/*.entry.json
           ls -la dist

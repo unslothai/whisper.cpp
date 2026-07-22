@@ -12,6 +12,19 @@ Two modes, one script (whisper's release CI has no separate assemble step):
                        whisper-<tag>-<os>-<arch>-<accel>.{tar.gz,zip}. Also emits
                        the manifest entry for the asset (stdout + <asset>.entry.json).
 
+                       SLIM sub-mode (SLIM=1 + LLAMA_TAG + GGML_VERSION, or the
+                       matching CLI flags): the bundle carries ONLY
+                       whisper-server + the whisper shared library + metadata.
+                       Every ggml object (base + backends) is provided at
+                       runtime by the PAIRED unslothai/llama.cpp install, whose
+                       ggml source tree this build compiled against; the
+                       installer links those libs into the bundle dir. Curation
+                       hard-fails if any libggml* would be included (mixing
+                       ggml builds across snapshots is broken at the symbol
+                       level), and the metadata/manifest entry gains
+                       install_kind=slim + requires_llama_tag /
+                       requires_ggml_version / requires_ggml_sonames.
+
   --emit-manifest /    Aggregate every whisper-*.{tar.gz,zip} already dropped in
   --emit-sha256        --dist into whisper-prebuilt-manifest.json (schema_version
                        1, component whisper.cpp, studio_protocol, artifacts[]) and
@@ -112,6 +125,10 @@ class PlatformStrategy:
     lib_suffix_re = r"\.so(\.\d+)*$"
     # Directories of runtime data (ROCm kernel libraries) shipped wholesale.
     data_dirs = ("rocblas", "hipblaslt")
+    # Slim bundles ship only these whisper pieces; the paired llama.cpp install
+    # provides every ggml object at runtime under these sonames.
+    whisper_lib_patterns = ("libwhisper.so*",)
+    ggml_sonames = ("libggml.so.0", "libggml-base.so.0")
 
     def server_name(self) -> str:
         return "whisper-server" + self.exe_suffix
@@ -161,6 +178,8 @@ class MacOSStrategy(PlatformStrategy):
     name = "macos"
     rpath = "@loader_path"
     lib_suffix_re = r"\.dylib$"
+    whisper_lib_patterns = ("libwhisper*.dylib",)
+    ggml_sonames = ("libggml.0.dylib", "libggml-base.0.dylib")
 
     def local_needed(self, path: Path, bin_dir: Path) -> list[str]:
         out = _run(["otool", "-L", str(path)])
@@ -193,6 +212,8 @@ class WindowsStrategy(PlatformStrategy):
     exe_suffix = ".exe"
     archive_ext = ".zip"
     rpath = ""  # Windows resolves DLLs from the executable's directory
+    whisper_lib_patterns = ("whisper.dll",)
+    ggml_sonames = ("ggml.dll", "ggml-base.dll")
     LOCAL_DLL_PREFIXES = ("ggml", "whisper", "amdhip", "rocblas", "hipblas",
                           "rocsolver", "amd_comgr", "rocm", "hsa")
 
@@ -285,6 +306,38 @@ def curate(strategy: PlatformStrategy, bin_dir: Path, stage: Path) -> None:
             shutil.copytree(src, stage / d, symlinks=strategy.supports_symlinks())
 
 
+_GGML_NAME_RE = re.compile(r"^(lib)?ggml", re.I)
+
+
+def curate_slim(strategy: PlatformStrategy, bin_dir: Path, stage: Path) -> None:
+    """SLIM curation: whisper-server + the whisper shared library, nothing else.
+
+    All ggml objects (base + every backend) come from the paired
+    unslothai/llama.cpp install at runtime -- the installer links them into
+    this bundle's directory, where ggml's registry scans for backend modules.
+    Mixing ggml builds across snapshots is broken at the symbol level, so this
+    is the inverse of the fat completeness check: hard-fail if any libggml*
+    would ship.
+    """
+    server = strategy.server_name()
+    if not (bin_dir / server).exists():
+        sys.exit(f"ERROR: missing {bin_dir / server}")
+    shutil.copy2(bin_dir / server, stage / server)
+
+    libs: list[str] = []
+    for pat in strategy.whisper_lib_patterns:
+        for match in sorted(bin_dir.glob(pat)):
+            _copy_one(strategy, bin_dir, stage, match.name)
+            libs.append(match.name)
+    if not libs:
+        sys.exit(f"ERROR: slim bundle found no whisper library matching "
+                 f"{strategy.whisper_lib_patterns} in {bin_dir} (slim builds must be shared)")
+
+    offenders = sorted(p.name for p in stage.iterdir() if _GGML_NAME_RE.match(p.name))
+    if offenders:
+        sys.exit("ERROR: slim bundle must contain NO ggml objects, found: " + ", ".join(offenders))
+
+
 def _coverage(cfg: dict) -> dict:
     """sm/gfx coverage fields for the manifest entry, by backend."""
     backend = cfg["backend"]
@@ -353,6 +406,17 @@ def write_metadata(stage: Path, strategy: PlatformStrategy, cfg: dict, asset: st
         "rpath": strategy.rpath,
         "studio_protocol": STUDIO_PROTOCOL,
     }
+    if cfg.get("slim"):
+        # The slim pairing contract: the installer may use this bundle only if
+        # the paired llama.cpp install (same tag) provides these ggml sonames
+        # plus the accelerator's backend module in its bin dir.
+        info.update({
+            "install_kind": "slim",
+            "requires_llama_tag": cfg["llama_tag"],
+            "requires_ggml_version": cfg["ggml_version"],
+            "requires_ggml_sonames": list(strategy.ggml_sonames),
+            "ggml_source": f"unslothai/llama.cpp@{cfg['llama_tag']}:/ggml",
+        })
     (stage / INFO_NAME).write_text(json.dumps(info, indent=2))
 
     # First line is the Unsloth fingerprint. whisper.cpp does not compile a
@@ -381,18 +445,25 @@ def write_metadata(stage: Path, strategy: PlatformStrategy, cfg: dict, asset: st
         f"source commit short: {short}",
         f"built at (UTC): {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}",
     ]
+    if cfg.get("slim"):
+        build_info[-1:-1] = [
+            "install kind: slim (ggml provided by the paired llama.cpp install)",
+            f"paired llama tag: {cfg['llama_tag']}",
+            f"ggml version: {cfg['ggml_version']}",
+        ]
     (stage / "BUILD_INFO.txt").write_text("\n".join(build_info) + "\n")
 
 
 def manifest_entry(info: dict, sha256: str) -> dict:
     """Per-asset manifest entry derived from a bundle's embedded info + its hash."""
-    return {
+    entry = {
         "asset": info["asset_name"],
         "os": info["os"],
         "arch": info["arch"],
         "backend": info["backend"],
         "accel": info["accel"],
-        "install_kind": f"{info['os']}-{info['arch']}-{info['backend']}",
+        "install_kind": info.get("install_kind")
+        or f"{info['os']}-{info['arch']}-{info['backend']}",
         "runtime_line": info.get("runtime_line"),
         "coverage_class": info.get("coverage_class"),
         "supported_sms": info.get("supported_sms"),
@@ -403,6 +474,12 @@ def manifest_entry(info: dict, sha256: str) -> dict:
         "min_os": info.get("min_os"),
         "sha256": sha256,
     }
+    if info.get("install_kind") == "slim":
+        # Pairing requirements the installer checks before choosing slim.
+        entry["requires_llama_tag"] = info.get("requires_llama_tag")
+        entry["requires_ggml_version"] = info.get("requires_ggml_version")
+        entry["requires_ggml_sonames"] = info.get("requires_ggml_sonames")
+    return entry
 
 
 # --------------------------------------------------------------------------- #
@@ -432,11 +509,21 @@ def do_package(args: argparse.Namespace) -> int:
         "min_os": args.min_os or env("MIN_OS") or "",
         "static": (args.static if args.static is not None
                    else (env("STATIC", "").lower() in ("1", "true", "on"))),
+        "slim": (args.slim if args.slim is not None
+                 else (env("SLIM", "").lower() in ("1", "true", "on"))),
+        "llama_tag": args.llama_tag or env("LLAMA_TAG") or "",
+        "ggml_version": args.ggml_version or env("GGML_VERSION") or "",
     }
     missing = [k for k in ("bin_dir", "src_dir", "out_dir", "tag", "upstream_tag",
                            "commit", "accel", "backend") if not cfg[k]]
     if missing:
         sys.exit(f"ERROR: missing required package inputs: {', '.join(missing)}")
+    if cfg["slim"]:
+        if not cfg["llama_tag"] or not cfg["ggml_version"]:
+            sys.exit("ERROR: SLIM mode needs LLAMA_TAG and GGML_VERSION "
+                     "(--llama-tag / --ggml-version)")
+        if not re.fullmatch(r"\d+\.\d+\.\d+", cfg["ggml_version"]):
+            sys.exit(f"ERROR: GGML_VERSION '{cfg['ggml_version']}' is not major.minor.patch")
 
     strategy = STRATEGIES.get(cfg["os"])
     if strategy is None:
@@ -450,7 +537,10 @@ def do_package(args: argparse.Namespace) -> int:
 
     stage = Path(tempfile.mkdtemp())
     try:
-        curate(strategy, bin_dir, stage)
+        if cfg["slim"]:
+            curate_slim(strategy, bin_dir, stage)
+        else:
+            curate(strategy, bin_dir, stage)
         write_metadata(stage, strategy, cfg, asset, cov)
         out_path = out_dir / asset
         strategy.archive(stage, out_path)
@@ -502,6 +592,7 @@ def do_aggregate(args: argparse.Namespace) -> int:
     common = {
         "schema_version": 1,
         "component": COMPONENT,
+        "paired_llama_tag": args.llama_tag or None,
         "source_repo": args.source_repo,
         "source_repo_url": f"https://github.com/{args.source_repo}",
         "source_commit": args.commit,
@@ -573,8 +664,8 @@ def main() -> int:
     ap.add_argument("--source-repo")
     ap.add_argument("--os", choices=["linux", "macos", "windows"])
     ap.add_argument("--arch", choices=["x64", "arm64"])
-    ap.add_argument("--accel", help="cpu | cuda12-portable | vulkan | rocm-gfx908 | metal ...")
-    ap.add_argument("--backend", choices=["cpu", "cuda", "vulkan", "rocm", "metal"])
+    ap.add_argument("--accel", help="cpu | cuda12-portable | vulkan | rocm-gfx908 | metal | slim ...")
+    ap.add_argument("--backend", choices=["cpu", "cuda", "vulkan", "rocm", "metal", "slim"])
     ap.add_argument("--runtime-line")
     ap.add_argument("--coverage-class")
     ap.add_argument("--sms")
@@ -582,6 +673,12 @@ def main() -> int:
     ap.add_argument("--mapped-targets")
     ap.add_argument("--min-os")
     ap.add_argument("--static", dest="static", action="store_true", default=None)
+    # slim mode (package): only whisper-server + libwhisper ship; ggml comes
+    # from the paired llama.cpp release at runtime. --llama-tag doubles as the
+    # aggregate-mode source of the manifest's top-level paired_llama_tag.
+    ap.add_argument("--slim", dest="slim", action="store_true", default=None)
+    ap.add_argument("--llama-tag", help="paired unslothai/llama.cpp release tag")
+    ap.add_argument("--ggml-version", help="ggml version compiled against (major.minor.patch)")
     args = ap.parse_args()
 
     if args.emit_manifest or args.emit_sha256:

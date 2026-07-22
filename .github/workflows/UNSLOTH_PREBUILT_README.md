@@ -22,6 +22,7 @@ them against in-tree pins, and drops `whisper-server` into the managed
   unsloth-prebuilt-cuda-windows.yml P1 Windows x64 CUDA (coverage profiles)
   unsloth-prebuilt-vulkan.yml     P1  Linux + Windows x64 Vulkan
   unsloth-prebuilt-rocm.yml       P1  Linux + Windows x64 ROCm (per gfx family)
+  unsloth-prebuilt-slim.yml       P1  Linux + Windows x64/arm64 slim (paired llama.cpp ggml)
 scripts/
   package_bundle.py               curate one bundle + aggregate the manifest/sha256
   validate_bundle.py              CI gate: --help, transcription, --no-gpu, closure
@@ -49,6 +50,7 @@ Run the **Unsloth whisper prebuilt (full release)** workflow
 | `upstream_tag` | `v1.9.1` | ggml-org/whisper.cpp tag to build |
 | `packaging_suffix` | `unsloth.1` | appended to the tag -> `v1.9.1-unsloth.1` |
 | `publish` | `false` | `false` builds + uploads workflow artifacts only; `true` publishes a GitHub Release |
+| `llama_tag` | (blank) | paired `unslothai/llama.cpp` release tag for slim bundles; blank (and every scheduled run) resolves to the newest published llama release |
 
 The `resolve` job dereferences `upstream_tag` to an **immutable commit SHA** and
 records it, then stamps `cmake/build-info.cmake` (build number and commit) and
@@ -107,10 +109,25 @@ with `--no-gpu` (Studio appends that during training):
 | Vulkan | `linux-x64-vulkan`, `windows-x64-vulkan` |
 | ROCm Linux x64 | `rocm-gfx908`, `rocm-gfx90a`, `rocm-gfx103X`, `rocm-gfx110X`, `rocm-gfx1150`, `rocm-gfx1151`, `rocm-gfx120X` |
 | ROCm Windows x64 | same seven gfx families |
+| Slim | `linux-x64-slim`, `linux-arm64-slim`, `windows-x64-slim`, `windows-arm64-slim` |
 
 The CUDA coverage-profile names and ROCm gfx families are **identical to
 `unslothai/llama.cpp`**, so the Studio installer can select a whisper bundle
 using the same profile it already resolved for the installed llama.cpp marker.
+
+**Slim bundles** contain only `whisper-server` + the whisper shared library
+(NO `libggml*`): whisper is compiled against the ggml source tree of the paired
+`unslothai/llama.cpp` release (the `llama_tag` resolved above), and at install
+time the Studio installer links every `libggml*` from that llama install's bin
+dir into the whisper bin dir, where ggml's registry dlopens its backend
+modules. Their manifest entries carry `install_kind: "slim"` plus
+`requires_llama_tag` / `requires_ggml_version` / `requires_ggml_sonames` so the
+installer can verify the pairing before choosing slim; with no compatible llama
+install it falls back to a fat bundle. This transition release still publishes
+every fat bundle alongside the slim set. CI validates each slim bundle on the
+free runner by wiring it to the same-tag llama cpu bundle
+(`validate_bundle.py --ggml-dir`); GPU-side validation is skipped, as for fat
+GPU bundles.
 
 The CUDA runtime (`libcudart`/`libcublas`) is intentionally **not** bundled;
 the installer pairs it with the user's PyTorch CUDA runtime via `runtime_line`.
@@ -126,7 +143,7 @@ whisper-<tag>-<os>-<arch>-<accel>.<ext>
 - `<tag>`   packaging tag, e.g. `v1.9.1-unsloth.1`
 - `<os>`    `linux` | `macos` | `windows`
 - `<arch>`  `x64` | `arm64`
-- `<accel>` `cpu` | `metal` | `vulkan` | a CUDA profile (`cuda12-portable`, ...) | `rocm-<gfx>` (`rocm-gfx110X`, ...)
+- `<accel>` `cpu` | `metal` | `vulkan` | `slim` | a CUDA profile (`cuda12-portable`, ...) | `rocm-<gfx>` (`rocm-gfx110X`, ...)
 - `<ext>`   `tar.gz` on Unix, `zip` on Windows
 
 Each release also carries:
@@ -167,7 +184,11 @@ Each release also carries:
 
 CPU/Vulkan/Metal entries set `runtime_line`/`coverage_class`/`supported_sms`/
 `gfx_target` to `null`; ROCm entries set `gfx_target` + `mapped_targets` (the
-concrete gfx list the umbrella target compiles for). `whisper-prebuilt-sha256.json`
+concrete gfx list the umbrella target compiles for). Slim entries set
+`install_kind` to `"slim"` and add `requires_llama_tag`,
+`requires_ggml_version` and `requires_ggml_sonames` (`["libggml.so.0",
+"libggml-base.so.0"]` on Linux, `["ggml.dll", "ggml-base.dll"]` on Windows);
+the manifest's top level records the same pairing as `paired_llama_tag`. `whisper-prebuilt-sha256.json`
 is a flat `name -> {kind, repo, sha256, source_commit, upstream_tag}` index
 covering every bundle, the two source archives and the manifest itself.
 

@@ -1,0 +1,340 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: "Unsloth whisper prebuilt: Slim (paired llama ggml)"
+
+# Reusable child of unsloth-prebuilt.yml (P1). One slim whisper-server bundle
+# per os/arch (linux x64/arm64, windows x64/arm64), containing ONLY
+# whisper-server + the whisper shared library + metadata. No GPU toolkits, no
+# per-profile matrix: every ggml object (base + CPU variants + cuda/hip/vulkan
+# backends) is provided at runtime by the PAIRED unslothai/llama.cpp install --
+# the Studio installer links the llama install's libggml* into the whisper bin
+# dir, where ggml's registry scans for backend modules. macOS stays fat
+# (metal/cpu, built by the macOS child).
+#
+# To make that pairing an ABI identity rather than cross-version luck, whisper
+# is compiled against the ggml SOURCE TREE of the paired llama release: the
+# vendored ggml/ dir is swapped for the one in llama's release source tarball
+# before configuring. The ggml libraries that build produces are then discarded
+# by the SLIM packaging mode, which hard-fails if any libggml* would ship.
+#
+# Validation runs CPU-side on the free runner: the llama linux/windows cpu
+# bundle of the SAME llama tag is downloaded and its ggml objects are linked
+# into the extracted slim bundle (validate_bundle.py --ggml-dir), then the
+# usual help/closure/transcription checks run. GPU validation is skipped here,
+# matching how fat GPU bundles are built without GPU validation today; the
+# --ggml-dir flag works unchanged on a self-hosted accelerator runner.
+
+on:
+  workflow_call:
+    inputs:
+      tag:            { required: true,  type: string }
+      upstream_tag:   { required: true,  type: string }
+      repo:           { required: false, type: string, default: 'unslothai/whisper.cpp' }
+      commit:         { required: true,  type: string }
+      source_artifact: { required: true,  type: string }
+      llama_tag:      { required: true,  type: string }
+
+permissions:
+  contents: read
+
+env:
+  WHISPER_MODEL_URL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin"
+
+jobs:
+  build-linux:
+    name: linux/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64,   runner: ubuntu-22.04 }
+          # ubuntu-22.04-arm keeps the glibc 2.35 floor; jammy gcc cannot target
+          # armv9 SME, so use clang (same toolchain as the CPU child). The
+          # in-tree ggml CPU backend is built but discarded at packaging.
+          - { arch: arm64, runner: ubuntu-22.04-arm }
+    steps:
+      - name: Checkout build tooling (this repo)
+        uses: actions/checkout@v6
+        with: { path: tooling, persist-credentials: false }
+
+      - name: Download stamped source @ ${{ inputs.tag }}
+        uses: actions/download-artifact@v6
+        with: { name: "${{ inputs.source_artifact }}", path: srcpkg }
+      - name: Extract source
+        run: |
+          set -eux
+          mkdir -p src
+          tar -xzf "srcpkg/whisper.cpp-source-${{ inputs.tag }}.tar.gz" -C src --strip-components=1
+
+      - name: Fetch paired llama ggml source + swap vendored ggml
+        run: |
+          set -eux
+          LT='${{ inputs.llama_tag }}'
+          mkdir -p llama_src
+          # unslothai/llama.cpp releases ship their exact source as an asset;
+          # fall back to a shallow tag clone if a release ever lacks it.
+          if curl -fsSL --retry 3 -o llama-src.tar.gz \
+               "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"; then
+            tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
+          else
+            git clone --depth 1 --branch "$LT" https://github.com/unslothai/llama.cpp llama_src
+          fi
+          [ -f llama_src/ggml/CMakeLists.txt ] || { echo "llama source has no ggml/ tree" >&2; exit 1; }
+          rm -rf src/ggml
+          cp -a llama_src/ggml src/ggml
+          # Record the exact ggml version this build compiles against; the
+          # packaging step stamps it into the manifest pairing contract.
+          GGML_VER="$(sed -nE 's/^set\(GGML_VERSION_(MAJOR|MINOR|PATCH) ([0-9]+)\)$/\2/p' \
+            src/ggml/CMakeLists.txt | paste -sd. -)"
+          printf '%s' "$GGML_VER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "could not parse GGML_VERSION from src/ggml/CMakeLists.txt" >&2; exit 1; }
+          echo "GGML_VERSION=$GGML_VER" >> "$GITHUB_ENV"
+          echo "paired llama ${LT}, ggml ${GGML_VER}"
+
+      - name: Install build dependencies
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build
+
+      - name: Toolchain (clang 19 on arm64)
+        if: matrix.arch == 'arm64'
+        run: |
+          set -eux
+          wget -q https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && sudo ./llvm.sh 19
+          { echo "CC=clang-19"; echo "CXX=clang++-19"; } >> "$GITHUB_ENV"
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.20
+        with: { key: "slim-linux-${{ matrix.arch }}", variant: ccache, evict-old-files: 14d }
+
+      # Shared build, backend-DL, no accelerator toolkits: the single in-tree
+      # CPU backend (GGML_CPU_ALL_VARIANTS=OFF) exists only to link the build;
+      # SLIM packaging ships whisper-server + libwhisper and nothing ggml.
+      - name: Configure + build (shared, backend-DL, no bundled ggml)
+        working-directory: src
+        run: |
+          set -eux
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_CPU_ALL_VARIANTS=OFF \
+            -DGGML_CUDA=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DWHISPER_BUILD_SERVER=ON \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_SDL2=OFF \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --config Release --target whisper-server -j "$(nproc)"
+          strip build/bin/whisper-server build/bin/libwhisper.so.* || true
+
+      - name: Package slim bundle
+        env:
+          SLIM: "1"
+          LLAMA_TAG: ${{ inputs.llama_tag }}
+          OS: linux
+          ARCH: ${{ matrix.arch }}
+          ACCEL: slim
+          BACKEND: slim
+          STATIC: "false"
+          MIN_OS: "glibc-2.35"
+          BIN_DIR: ${{ github.workspace }}/src/build/bin
+          SRC_DIR: ${{ github.workspace }}/src
+          OUT_DIR: ${{ github.workspace }}/dist
+          TAG: ${{ inputs.tag }}
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          SOURCE_COMMIT: ${{ inputs.commit }}
+          SOURCE_REPO: ${{ inputs.repo }}
+        run: python3 tooling/scripts/package_bundle.py
+
+      # CPU-side proof on the free runner with the exact consumer wiring: the
+      # paired llama release's cpu bundle provides every ggml object, linked in
+      # by validate_bundle.py --ggml-dir before the usual checks.
+      - name: Validate slim bundle against the paired llama cpu bundle
+        run: |
+          set -eux
+          mkdir -p bundle model llama_cpu
+          tar -xzf "dist/whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-slim.tar.gz" -C bundle
+          LT='${{ inputs.llama_tag }}'
+          curl -fsSL --retry 3 -o llama-cpu.tar.gz \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/app-${LT}-linux-${{ matrix.arch }}-cpu.tar.gz"
+          tar -xzf llama-cpu.tar.gz -C llama_cpu
+          curl -fsSL "$WHISPER_MODEL_URL" -o model/ggml-tiny.en.bin
+          python3 tooling/scripts/validate_bundle.py \
+            --bundle bundle --model model/ggml-tiny.en.bin --audio src/samples/jfk.wav \
+            --ggml-dir llama_cpu
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-slim
+          path: dist/whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-slim.tar.gz
+          if-no-files-found: error
+
+  build-windows:
+    name: windows/${{ matrix.arch }}
+    # x64 builds native with MSVC (mirrors the Windows CUDA child's toolchain
+    # minus every CUDA step). arm64 is cross-compiled with clang via whisper's
+    # cmake/arm64-windows-llvm.cmake on the same x64 runner (mirrors the CPU
+    # child; MSVC cannot link ggml's aarch64 repack kernels) and stays
+    # best-effort, never release-blocking. Unlike the CPU child's static arm64
+    # binary this is a SHARED build: slim must ship whisper.dll.
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64,   msvc_arch: amd64,       optional: false }
+          - { arch: arm64, msvc_arch: amd64_arm64, optional: true  }
+    continue-on-error: ${{ matrix.optional }}
+    defaults:
+      run: { shell: pwsh }
+    steps:
+      - name: Checkout build tooling (this repo)
+        uses: actions/checkout@v6
+        with: { path: tooling, persist-credentials: false }
+
+      - name: Download stamped source @ ${{ inputs.tag }}
+        uses: actions/download-artifact@v6
+        with: { name: "${{ inputs.source_artifact }}", path: srcpkg }
+      - name: Extract source
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p src
+          tar -xzf "srcpkg/whisper.cpp-source-${{ inputs.tag }}.tar.gz" -C src --strip-components=1
+
+      - name: Fetch paired llama ggml source + swap vendored ggml
+        shell: bash
+        run: |
+          set -eux
+          LT='${{ inputs.llama_tag }}'
+          mkdir -p llama_src
+          if curl -fsSL --retry 3 -o llama-src.tar.gz \
+               "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"; then
+            tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
+          else
+            git clone --depth 1 --branch "$LT" https://github.com/unslothai/llama.cpp llama_src
+          fi
+          [ -f llama_src/ggml/CMakeLists.txt ] || { echo "llama source has no ggml/ tree" >&2; exit 1; }
+          rm -rf src/ggml
+          cp -a llama_src/ggml src/ggml
+          GGML_VER="$(sed -nE 's/^set\(GGML_VERSION_(MAJOR|MINOR|PATCH) ([0-9]+)\)$/\2/p' \
+            src/ggml/CMakeLists.txt | paste -sd. -)"
+          printf '%s' "$GGML_VER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "could not parse GGML_VERSION from src/ggml/CMakeLists.txt" >&2; exit 1; }
+          echo "GGML_VERSION=$GGML_VER" >> "$GITHUB_ENV"
+          echo "paired llama ${LT}, ggml ${GGML_VER}"
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.20
+        with: { key: "slim-windows-${{ matrix.arch }}", variant: ccache, evict-old-files: 14d }
+
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.11" }
+
+      - name: Install Ninja
+        run: choco install ninja --no-progress
+
+      - name: Setup MSVC (${{ matrix.msvc_arch }})
+        uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: "${{ matrix.msvc_arch }}" }
+
+      - name: Configure + build (x64)
+        if: matrix.arch == 'x64'
+        working-directory: src
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_SHARED_LIBS=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_BACKEND_DL=ON `
+            -DGGML_CPU_ALL_VARIANTS=OFF `
+            -DGGML_CUDA=OFF `
+            -DGGML_OPENMP=OFF `
+            -DWHISPER_BUILD_EXAMPLES=ON `
+            -DWHISPER_BUILD_SERVER=ON `
+            -DWHISPER_BUILD_TESTS=OFF `
+            -DWHISPER_SDL2=OFF `
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --config Release --target whisper-server -j 3
+
+      # arm64 configure MUST run in cmd, not pwsh: PowerShell word-splits the
+      # unquoted -DCMAKE_TOOLCHAIN_FILE=cmake/arm64-windows-llvm.cmake at the
+      # final dot (see the CPU child's arm64 step for the full explanation).
+      - name: Configure + build (arm64, cmd)
+        if: matrix.arch == 'arm64'
+        working-directory: src
+        shell: cmd
+        run: |
+          cmake -S . -B build -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DBUILD_SHARED_LIBS=ON ^
+            -DGGML_NATIVE=OFF ^
+            -D CMAKE_TOOLCHAIN_FILE=cmake/arm64-windows-llvm.cmake ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_CPU_ALL_VARIANTS=OFF ^
+            -DGGML_CUDA=OFF ^
+            -DGGML_OPENMP=OFF ^
+            -DWHISPER_BUILD_EXAMPLES=ON ^
+            -DWHISPER_BUILD_SERVER=ON ^
+            -DWHISPER_BUILD_TESTS=OFF ^
+            -DWHISPER_SDL2=OFF ^
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache ^
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          if errorlevel 1 exit /b 1
+          cmake --build build --config Release --target whisper-server -j 3
+          if errorlevel 1 exit /b 1
+
+      - name: Package slim bundle
+        env:
+          SLIM: "1"
+          LLAMA_TAG: ${{ inputs.llama_tag }}
+          OS: windows
+          ARCH: ${{ matrix.arch }}
+          ACCEL: slim
+          BACKEND: slim
+          STATIC: "false"
+          MIN_OS: "windows-10"
+          BIN_DIR: ${{ github.workspace }}/src/build/bin
+          SRC_DIR: ${{ github.workspace }}/src
+          OUT_DIR: ${{ github.workspace }}/dist
+          TAG: ${{ inputs.tag }}
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          SOURCE_COMMIT: ${{ inputs.commit }}
+          SOURCE_REPO: ${{ inputs.repo }}
+        run: python tooling/scripts/package_bundle.py
+
+      # arm64 is cross-compiled and cannot execute on the x64 runner; validate
+      # the native x64 bundle only, wired to the paired llama windows cpu bundle.
+      - name: Validate slim bundle against the paired llama cpu bundle
+        if: matrix.arch == 'x64'
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p bundle model llama_cpu
+          (cd bundle && 7z x -y "../dist/whisper-${{ inputs.tag }}-windows-${{ matrix.arch }}-slim.zip" >/dev/null)
+          LT='${{ inputs.llama_tag }}'
+          curl -fsSL --retry 3 -o llama-cpu.zip \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/app-${LT}-windows-${{ matrix.arch }}-cpu.zip"
+          (cd llama_cpu && 7z x -y ../llama-cpu.zip >/dev/null)
+          curl -fsSL "$WHISPER_MODEL_URL" -o model/ggml-tiny.en.bin
+          python tooling/scripts/validate_bundle.py \
+            --bundle bundle --model model/ggml-tiny.en.bin --audio src/samples/jfk.wav \
+            --ggml-dir llama_cpu
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: whisper-${{ inputs.tag }}-windows-${{ matrix.arch }}-slim
+          path: dist/whisper-${{ inputs.tag }}-windows-${{ matrix.arch }}-slim.zip
+          if-no-files-found: error

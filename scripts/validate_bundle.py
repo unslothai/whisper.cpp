@@ -19,6 +19,13 @@ clip, this asserts the bundle is actually runnable and speaks the Studio
 otherwise the server is launched normally and CPU is fine. Real GPU inference is
 meant for a self-hosted accelerator runner (see the workflow / README).
 
+--ggml-dir <dir> validates a SLIM bundle (which ships no libggml*): every ggml
+object from that directory (an extracted paired unslothai/llama.cpp bundle) is
+linked into the bundle dir first -- exactly the wiring the Studio installer
+performs -- and then the same checks run. ggml's registry scans the executable's
+directory for backend modules, so links in the bin dir are the only wiring that
+registers both the CPU and accelerator backends.
+
 Exit 0 = valid; nonzero = do not ship this asset.
 """
 from __future__ import annotations
@@ -28,6 +35,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -49,6 +57,33 @@ _HOST_PROVIDED_LIB = re.compile(
     r"nvjitlink|nvidia-[a-z0-9_.+-]+|vulkan)\.so",
     re.I,
 )
+
+
+def wire_ggml(bundle: Path, ggml_dir: Path) -> None:
+    """Link every ggml object from --ggml-dir into the bundle dir (slim wiring).
+
+    Symlink where the platform allows it, copy otherwise (Windows). Existing
+    names in the bundle are left alone -- though a slim bundle ships none, by
+    packaging contract.
+    """
+    if not ggml_dir.is_dir():
+        sys.exit(f"ERROR: --ggml-dir is not a directory: {ggml_dir}")
+    names: set[str] = set()
+    for pat in ("libggml*.so", "libggml*.so.*", "libggml*.dylib", "ggml*.dll"):
+        names.update(p.name for p in ggml_dir.glob(pat))
+    if not names:
+        sys.exit(f"ERROR: no ggml libraries (libggml* / ggml*.dll) in {ggml_dir}")
+    wired = 0
+    for name in sorted(names):
+        src, dst = ggml_dir / name, bundle / name
+        if dst.exists() or dst.is_symlink():
+            continue
+        try:
+            os.symlink(os.path.abspath(src), dst)
+        except (OSError, NotImplementedError):
+            shutil.copy2(src, dst, follow_symlinks=True)
+        wired += 1
+    print(f"OK: wired {wired} ggml objects from {ggml_dir} into {bundle}")
 
 
 def _server_path(bundle: Path) -> Path:
@@ -210,11 +245,17 @@ def main() -> int:
     ap.add_argument("--cpu-only", action="store_true",
                     help="GPU-less build runner: run help + closure + one --no-gpu transcription only")
     ap.add_argument("--skip-no-gpu", action="store_true", help="skip the --no-gpu fallback run")
+    ap.add_argument("--ggml-dir", type=Path,
+                    help="slim bundles: link every ggml object from this extracted "
+                         "paired llama.cpp bundle into the bundle dir before checking")
     args = ap.parse_args()
 
     for p in (args.bundle, args.model, args.audio):
         if not p.exists():
             sys.exit(f"ERROR: not found: {p}")
+
+    if args.ggml_dir:
+        wire_ggml(args.bundle, args.ggml_dir)
 
     server = _server_path(args.bundle)
     if os.name != "nt":
