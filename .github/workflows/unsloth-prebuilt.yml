@@ -3,23 +3,26 @@
 
 name: Unsloth whisper prebuilt (full release)
 
-# One workflow run, one release per upstream whisper.cpp tag. The heavy build
-# work is split into reusable per-accelerator children:
-#   unsloth-prebuilt-cpu.yml           -- CPU bundles (Linux x64/arm64, Windows x64 [P0] + arm64 [best-effort], macOS x64)
-#   unsloth-prebuilt-macos.yml         -- macOS arm64 Metal (+ x64 CPU slice)                   [P0]
-#   unsloth-prebuilt-cuda.yml          -- Linux CUDA bundles (x64 + arm64, matrix profiles)     [P1]
-#   unsloth-prebuilt-cuda-windows.yml  -- Windows CUDA bundles (x64, matrix profiles)           [P1]
-#   unsloth-prebuilt-vulkan.yml        -- Vulkan bundles (Linux + Windows, x64)                 [P1]
-#   unsloth-prebuilt-rocm.yml          -- ROCm bundles (Linux + Windows, per gfx target)        [P1]
-#   unsloth-prebuilt-slim.yml          -- Slim bundles (Linux + Windows, x64 + arm64) compiled  [P1]
-#                                         against the paired unslothai/llama.cpp release's ggml;
-#                                         they ship NO libggml* (the llama install provides it)
+# One workflow run, one release per upstream whisper.cpp tag. Releases are
+# SLIM-ONLY: the single build child is
+#   unsloth-prebuilt-slim.yml -- Slim bundles (Linux + Windows + macOS, x64 +
+#                                arm64) compiled against the paired
+#                                unslothai/llama.cpp release's ggml; they ship
+#                                NO libggml* (the llama install provides every
+#                                ggml backend: cpu variants, cuda, hip, vulkan,
+#                                metal). One bundle per os/arch serves every
+#                                accelerator on that platform.
 #
-# Tiered atomicity: the `assemble` job hard-requires the P0 children (CPU +
-# macOS) and only best-effort waits on the P1 GPU children. A P1 failure does
-# NOT block the release -- its bundles are simply absent from the manifest and
-# those hosts fall back to a CPU bundle. A P0 failure blocks publication
-# entirely: the installer needs the full P0 set at one tag.
+# The fat per-accelerator children (unsloth-prebuilt-cpu / -macos / -cuda /
+# -cuda-windows / -vulkan / -rocm) are intentionally NOT invoked anymore: the
+# llama.cpp prebuilts are always installed alongside whisper, so shipping a
+# second copy of every ggml backend inside whisper bundles bought nothing.
+# The workflow files are kept on disk for reference and ad-hoc dispatch only.
+#
+# P0 atomicity: the `assemble` job hard-requires the slim child. Inside it,
+# every slice except windows/arm64 (cross-built, best-effort) is required; the
+# "Verify P0 coverage" gate below refuses to publish unless the full required
+# slim set exists at one tag.
 #
 # Immutability: `resolve` dereferences the requested upstream tag to an exact
 # commit SHA and records it. Every child builds that one stamped source tree
@@ -86,10 +89,6 @@ jobs:
       source_artifact: ${{ steps.r.outputs.source_artifact }}
       exists: ${{ steps.r.outputs.exists }}
       llama_tag: ${{ steps.r.outputs.llama_tag }}
-      cuda_matrix: ${{ steps.r.outputs.cuda_matrix }}
-      win_cuda_matrix: ${{ steps.r.outputs.win_cuda_matrix }}
-      rocm_matrix: ${{ steps.r.outputs.rocm_matrix }}
-      macos_matrix: ${{ steps.r.outputs.macos_matrix }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -187,28 +186,6 @@ jobs:
           tar -czf "${RUNNER_TEMP}/whisper.cpp-source-${TAG}.tar.gz" \
             --exclude-vcs --transform "s,^whisper-src,whisper.cpp-${TAG}," whisper-src
 
-          # x64 CUDA profiles (mirror unslothai/llama.cpp coverage names) + one
-          # arm64 cuda13-portable slice. cuda12 via Jimver; cuda13 via NVIDIA
-          # redist (Jimver lacks 13.3).
-          ALL='[
-            {"profile":"cuda12-legacy",  "arch":"x64",  "runner":"ubuntu-22.04",    "cuda":"12.8.0","toolkit_line":"12.8","line":"cuda12","klass":"legacy",  "archs":"50-virtual 61-virtual","sms":"50 52 60 61"},
-            {"profile":"cuda12-older",   "arch":"x64",  "runner":"ubuntu-22.04",    "cuda":"12.8.0","toolkit_line":"12.8","line":"cuda12","klass":"older",   "archs":"70 75 80 86 89","sms":"70 75 80 86 89"},
-            {"profile":"cuda12-newer",   "arch":"x64",  "runner":"ubuntu-22.04",    "cuda":"12.8.0","toolkit_line":"12.8","line":"cuda12","klass":"newer",   "archs":"86 89 90 100 120","sms":"86 89 90 100 120"},
-            {"profile":"cuda12-portable","arch":"x64",  "runner":"ubuntu-22.04",    "cuda":"12.8.0","toolkit_line":"12.8","line":"cuda12","klass":"portable","archs":"70 75 80 86 89 90 100 120","sms":"70 75 80 86 89 90 100 120"},
-            {"profile":"cuda13-older",   "arch":"x64",  "runner":"ubuntu-22.04",    "cuda":"13.3","toolkit_line":"13.3","line":"cuda13","klass":"older",   "archs":"75 80 86 89","sms":"75 80 86 89"},
-            {"profile":"cuda13-newer",   "arch":"x64",  "runner":"ubuntu-22.04",    "cuda":"13.3","toolkit_line":"13.3","line":"cuda13","klass":"newer",   "archs":"86 89 90 100 120","sms":"86 89 90 100 120"},
-            {"profile":"cuda13-portable","arch":"x64",  "runner":"ubuntu-22.04",    "cuda":"13.3","toolkit_line":"13.3","line":"cuda13","klass":"portable","archs":"75 80 86 89 90 100 120","sms":"75 80 86 89 90 100 120"},
-            {"profile":"cuda13-portable","arch":"arm64","runner":"ubuntu-24.04-arm","cuda":"13.3","toolkit_line":"13.3","line":"cuda13","klass":"portable","archs":"90 100 120 121","sms":"90 100 120 121"}
-          ]'
-          CUDA_INCLUDE="$(jq -c . <<<"$ALL")"
-          WIN_CUDA_INCLUDE="$(jq -c '[.[] | select(.arch=="x64") | .runner="windows-2022"]' <<<"$CUDA_INCLUDE")"
-          ROCM_MATRIX='{"gfx_target":["gfx1151","gfx1150","gfx120X","gfx110X","gfx103X","gfx90a","gfx908"]}'
-          MACOS_INCLUDE='[
-            {"build":"arm64","runner":"macos-26",      "expect_arch":"arm64", "deploy_target":"14.0","accel":"metal","backend":"metal","defines":"-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_USE_BF16=ON","shared":"OFF","static":"true"},
-            {"build":"x64",  "runner":"macos-15-intel","expect_arch":"x86_64","deploy_target":"13.3","accel":"cpu",  "backend":"cpu",  "defines":"-DGGML_METAL=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON","shared":"ON","static":"false"}
-          ]'
-          MACOS_INCLUDE="$(jq -c . <<<"$MACOS_INCLUDE")"
-
           {
             echo "upstream_tag=$UT"
             echo "tag=$TAG"
@@ -217,10 +194,6 @@ jobs:
             echo "source_artifact=whisper-source-${TAG}"
             echo "exists=$EXISTS"
             echo "llama_tag=$LT"
-            echo "cuda_matrix={\"include\":$CUDA_INCLUDE}"
-            echo "win_cuda_matrix={\"include\":$WIN_CUDA_INCLUDE}"
-            echo "rocm_matrix=$ROCM_MATRIX"
-            echo "macos_matrix={\"include\":$MACOS_INCLUDE}"
           } >> "$GITHUB_OUTPUT"
           echo "Resolved $UT -> $TAG ($COMMIT); release exists=$EXISTS; paired llama=$LT"
 
@@ -232,82 +205,6 @@ jobs:
           path: ${{ runner.temp }}/whisper.cpp-source-${{ steps.r.outputs.tag }}.tar.gz
           if-no-files-found: error
           retention-days: 7
-
-  build-cpu:
-    name: CPU
-    needs: resolve
-    if: ${{ needs.resolve.outputs.exists != 'true' || github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/unsloth-prebuilt-cpu.yml
-    with:
-      tag: ${{ needs.resolve.outputs.tag }}
-      upstream_tag: ${{ needs.resolve.outputs.upstream_tag }}
-      repo: ${{ needs.resolve.outputs.repo }}
-      commit: ${{ needs.resolve.outputs.commit }}
-      source_artifact: ${{ needs.resolve.outputs.source_artifact }}
-
-  build-macos:
-    name: macOS
-    needs: resolve
-    if: ${{ needs.resolve.outputs.exists != 'true' || github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/unsloth-prebuilt-macos.yml
-    with:
-      tag: ${{ needs.resolve.outputs.tag }}
-      upstream_tag: ${{ needs.resolve.outputs.upstream_tag }}
-      repo: ${{ needs.resolve.outputs.repo }}
-      commit: ${{ needs.resolve.outputs.commit }}
-      source_artifact: ${{ needs.resolve.outputs.source_artifact }}
-      matrix: ${{ needs.resolve.outputs.macos_matrix }}
-
-  build-cuda:
-    name: CUDA
-    needs: resolve
-    if: ${{ needs.resolve.outputs.exists != 'true' || github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/unsloth-prebuilt-cuda.yml
-    with:
-      tag: ${{ needs.resolve.outputs.tag }}
-      upstream_tag: ${{ needs.resolve.outputs.upstream_tag }}
-      repo: ${{ needs.resolve.outputs.repo }}
-      commit: ${{ needs.resolve.outputs.commit }}
-      source_artifact: ${{ needs.resolve.outputs.source_artifact }}
-      matrix: ${{ needs.resolve.outputs.cuda_matrix }}
-
-  build-windows-cuda:
-    name: CUDA Windows
-    needs: resolve
-    if: ${{ needs.resolve.outputs.exists != 'true' || github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/unsloth-prebuilt-cuda-windows.yml
-    with:
-      tag: ${{ needs.resolve.outputs.tag }}
-      upstream_tag: ${{ needs.resolve.outputs.upstream_tag }}
-      repo: ${{ needs.resolve.outputs.repo }}
-      commit: ${{ needs.resolve.outputs.commit }}
-      source_artifact: ${{ needs.resolve.outputs.source_artifact }}
-      matrix: ${{ needs.resolve.outputs.win_cuda_matrix }}
-
-  build-vulkan:
-    name: Vulkan
-    needs: resolve
-    if: ${{ needs.resolve.outputs.exists != 'true' || github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/unsloth-prebuilt-vulkan.yml
-    with:
-      tag: ${{ needs.resolve.outputs.tag }}
-      upstream_tag: ${{ needs.resolve.outputs.upstream_tag }}
-      repo: ${{ needs.resolve.outputs.repo }}
-      commit: ${{ needs.resolve.outputs.commit }}
-      source_artifact: ${{ needs.resolve.outputs.source_artifact }}
-
-  build-rocm:
-    name: ROCm
-    needs: resolve
-    if: ${{ needs.resolve.outputs.exists != 'true' || github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/unsloth-prebuilt-rocm.yml
-    with:
-      tag: ${{ needs.resolve.outputs.tag }}
-      upstream_tag: ${{ needs.resolve.outputs.upstream_tag }}
-      repo: ${{ needs.resolve.outputs.repo }}
-      commit: ${{ needs.resolve.outputs.commit }}
-      source_artifact: ${{ needs.resolve.outputs.source_artifact }}
-      matrix: ${{ needs.resolve.outputs.rocm_matrix }}
 
   build-slim:
     name: Slim
@@ -324,15 +221,16 @@ jobs:
 
   assemble:
     name: Assemble metadata + publish
-    needs: [resolve, build-cpu, build-macos, build-cuda, build-windows-cuda, build-vulkan, build-rocm, build-slim]
-    # Tiered gate: run whenever the P0 children (CPU + macOS) succeeded, even if
-    # a P1 GPU child failed or was skipped. A P0 failure short-circuits here and
-    # nothing is published.
+    needs: [resolve, build-slim]
+    # P0 gate: the slim child is the release. Its windows/arm64 slice is
+    # continue-on-error inside the child (cross-built, best-effort), so a
+    # build-slim success still hard-implies every required slice; the "Verify
+    # P0 coverage" step below re-checks the required asset set by name. A slim
+    # child failure short-circuits here and nothing is published.
     if: >-
       always()
       && needs.resolve.result == 'success'
-      && needs.build-cpu.result == 'success'
-      && needs.build-macos.result == 'success'
+      && needs.build-slim.result == 'success'
       && (needs.resolve.outputs.exists != 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-22.04
     env:
@@ -399,13 +297,15 @@ jobs:
         run: |
           set -eu
           TAG='${{ needs.resolve.outputs.tag }}'
+          # Required slim set (windows/arm64 is cross-built best-effort and may
+          # be absent without blocking the release).
           fail=0
           for f in \
-            "whisper-${TAG}-linux-x64-cpu.tar.gz" \
-            "whisper-${TAG}-linux-arm64-cpu.tar.gz" \
-            "whisper-${TAG}-windows-x64-cpu.zip" \
-            "whisper-${TAG}-macos-x64-cpu.tar.gz" \
-            "whisper-${TAG}-macos-arm64-metal.tar.gz"; do
+            "whisper-${TAG}-linux-x64-slim.tar.gz" \
+            "whisper-${TAG}-linux-arm64-slim.tar.gz" \
+            "whisper-${TAG}-windows-x64-slim.zip" \
+            "whisper-${TAG}-macos-x64-slim.tar.gz" \
+            "whisper-${TAG}-macos-arm64-slim.tar.gz"; do
             [ -s "dist/$f" ] || { echo "ERROR: missing required P0 asset $f" >&2; fail=1; }
           done
           [ "$fail" = 0 ] || { echo "ERROR: refusing to publish an incomplete P0 set" >&2; exit 1; }
@@ -441,7 +341,8 @@ jobs:
           TAG='${{ needs.resolve.outputs.tag }}'
           UT='${{ needs.resolve.outputs.upstream_tag }}'
           REPO="$GITHUB_REPOSITORY"
-          NOTES="Automated Unsloth whisper.cpp (whisper-server) prebuild for upstream [${UT}](https://github.com/ggml-org/whisper.cpp/releases/tag/${UT})."
+          LT='${{ needs.resolve.outputs.llama_tag }}'
+          NOTES="Automated Unsloth whisper.cpp (whisper-server) slim prebuild for upstream [${UT}](https://github.com/ggml-org/whisper.cpp/releases/tag/${UT}). Every bundle is slim: it ships no ggml libraries and requires the paired [unslothai/llama.cpp ${LT}](https://github.com/unslothai/llama.cpp/releases/tag/${LT}) install, whose ggml provides every backend (CPU variants, CUDA, HIP, Vulkan, Metal)."
           # Atomic publish: upload as a draft (hidden from the anon API the
           # installer reads), then flip draft=false only once every asset landed.
           if [ "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null || true)" = "true" ]; then

@@ -6,6 +6,16 @@ Its only job beyond mirroring upstream is to build and publish **prebuilt
 speech-to-text engine without a C/C++ toolchain, mirroring the existing
 [`unslothai/llama.cpp`](https://github.com/unslothai/llama.cpp) prebuilt pipeline.
 
+Releases are **slim-only**: every published bundle contains just
+`whisper-server` + the whisper shared library + metadata, and rides the ggml of
+a **paired `unslothai/llama.cpp` release**. The llama prebuilts are first-class
+and always installed, and they already ship every ggml backend (CPU variants,
+CUDA, HIP, Vulkan, Metal), so one slim whisper bundle per os/arch serves the
+full [Windows, Linux (and WSL via Linux), macOS] x [NVIDIA, AMD, CPU-only]
+product. Fat whisper bundles (per-accelerator `cpu`/`cuda*`/`rocm-*`/`vulkan`/
+`metal` assets) are **no longer published**; releases that already carried them
+keep theirs.
+
 The Studio installer (`studio/install_whisper_prebuilt.py`, default
 `--published-repo unslothai/whisper.cpp`) downloads the release assets, verifies
 them against in-tree pins, and drops `whisper-server` into the managed
@@ -15,18 +25,18 @@ them against in-tree pins, and drops `whisper-server` into the managed
 
 ```
 .github/workflows/
-  unsloth-prebuilt.yml            orchestrator: resolve tag -> fan out -> gate -> publish
-  unsloth-prebuilt-cpu.yml        P0  Linux x64/arm64 + Windows x64/arm64 CPU (x86 dynamic, arm64 static)
-  unsloth-prebuilt-macos.yml      P0  macOS arm64 Metal + macOS x64 CPU
-  unsloth-prebuilt-cuda.yml       P1  Linux CUDA (x64 + arm64, coverage profiles)
-  unsloth-prebuilt-cuda-windows.yml P1 Windows x64 CUDA (coverage profiles)
-  unsloth-prebuilt-vulkan.yml     P1  Linux + Windows x64 Vulkan
-  unsloth-prebuilt-rocm.yml       P1  Linux + Windows x64 ROCm (per gfx family)
-  unsloth-prebuilt-slim.yml       P1  Linux + Windows x64/arm64 slim (paired llama.cpp ggml)
+  unsloth-prebuilt.yml            orchestrator: resolve tag -> slim child -> gate -> publish
+  unsloth-prebuilt-slim.yml       Linux + Windows + macOS, x64/arm64 slim (paired llama.cpp ggml)
 scripts/
   package_bundle.py               curate one bundle + aggregate the manifest/sha256
   validate_bundle.py              CI gate: --help, transcription, --no-gpu, closure
 ```
+
+The fat per-accelerator children (`unsloth-prebuilt-cpu.yml`,
+`unsloth-prebuilt-macos.yml`, `unsloth-prebuilt-cuda.yml`,
+`unsloth-prebuilt-cuda-windows.yml`, `unsloth-prebuilt-vulkan.yml`,
+`unsloth-prebuilt-rocm.yml`) remain in the tree for reference, but the
+orchestrator no longer invokes them and their bundles are no longer published.
 
 ## Creating the fork
 
@@ -36,9 +46,9 @@ scripts/
 3. `Settings -> Actions -> General`: allow GitHub Actions, and set workflow
    permissions to **Read and write** (the orchestrator needs `contents: write`
    to create the release).
-4. No extra org secrets are required for the P0 (CPU + macOS) release: the
-   built-in `GITHUB_TOKEN` publishes the release and reads upstream releases.
-   See "Runners and secrets you must provide" for the P1 GPU tiers.
+4. No extra org secrets are required: the built-in `GITHUB_TOKEN` publishes the
+   release and reads the upstream whisper.cpp and paired llama.cpp releases.
+   See "Runners and secrets you must provide" for optional extras.
 
 ## Triggering a release
 
@@ -64,75 +74,55 @@ from the anonymous API the installer reads), every asset is uploaded, and only
 then is it flipped to `draft=false`. A leftover draft from a failed run is
 detected as "not published" and rebuilt on the next run.
 
-## Matrix tiers
+## The slim bundle set
 
-**P0 (required to publish)** - the release is blocked until all five build and
-validate:
+One slim bundle per os/arch, six in total:
 
-| asset | runner |
-| --- | --- |
-| `whisper-<tag>-linux-x64-cpu.tar.gz` | `ubuntu-22.04` |
-| `whisper-<tag>-linux-arm64-cpu.tar.gz` | `ubuntu-22.04-arm` |
-| `whisper-<tag>-windows-x64-cpu.zip` | `windows-2022` |
-| `whisper-<tag>-macos-x64-cpu.tar.gz` | `macos-15-intel` |
-| `whisper-<tag>-macos-arm64-metal.tar.gz` | `macos-14` |
-
-x86-64 CPU bundles (Linux x64, Windows x64, macOS x64) are **dynamic**
-(`-DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON`): the ggml CPU backend is
-built once per microarch (`ggml-cpu-sse42/sandybridge/haswell/skylakex/icelake
-...`) and ggml dispatches to the best variant the host supports at runtime
-(SSE4.2 .. AVX-512), matching upstream ggml-org/whisper.cpp and
-unslothai/llama.cpp. `GGML_NATIVE=OFF` alone does NOT lower the ISA floor, so a
-single static x86 build would bake in an AVX2/Haswell-2013 floor and SIGILL on
-older CPUs. `arm64` CPU bundles are **static** single-file at the broad `armv8-a`
-baseline (`-DGGML_CPU_ARM_ARCH=armv8-a`). macOS `arm64` is a static single-file
-Metal build that embeds the shader library (`-DGGML_METAL_EMBED_LIBRARY=ON`,
-BF16 on).
-
-`whisper-<tag>-windows-arm64-cpu.zip` also builds in the CPU child, cross-compiled
-on the x64 runner with the MSVC `amd64_arm64` toolset (mirroring
-unslothai/llama.cpp's windows-cpu arm64 leg). It cannot be run/validated on the
-x64 runner, so it ships **best-effort** (`continue-on-error`): a failed arm64 leg
-is skipped and does not block the release. Windows arm64 hosts otherwise fall
-back to the x64 bundle under emulation, or to Transformers STT.
-
-**P1 (best-effort GPU)** - a P1 failure does NOT block the release; those hosts
-fall back to a CPU bundle. GPU bundles are **dynamic** with `GGML_BACKEND_DL`
-(the accelerator backend is a dlopen'd module), so every one also runs on CPU
-with `--no-gpu` (Studio appends that during training):
-
-| tier | assets |
-| --- | --- |
-| CUDA Linux x64 | `cuda12-legacy`, `cuda12-older`, `cuda12-newer`, `cuda12-portable`, `cuda13-older`, `cuda13-newer`, `cuda13-portable` |
-| CUDA Linux arm64 | `cuda13-portable` |
-| CUDA Windows x64 | same seven profiles as Linux x64 |
-| Vulkan | `linux-x64-vulkan`, `windows-x64-vulkan` |
-| ROCm Linux x64 | `rocm-gfx908`, `rocm-gfx90a`, `rocm-gfx103X`, `rocm-gfx110X`, `rocm-gfx1150`, `rocm-gfx1151`, `rocm-gfx120X` |
-| ROCm Windows x64 | same seven gfx families |
-| Slim | `linux-x64-slim`, `linux-arm64-slim`, `windows-x64-slim`, `windows-arm64-slim` |
-
-The CUDA coverage-profile names and ROCm gfx families are **identical to
-`unslothai/llama.cpp`**, so the Studio installer can select a whisper bundle
-using the same profile it already resolved for the installed llama.cpp marker.
+| asset | runner | required to publish |
+| --- | --- | --- |
+| `whisper-<tag>-linux-x64-slim.tar.gz` | `ubuntu-22.04` | yes |
+| `whisper-<tag>-linux-arm64-slim.tar.gz` | `ubuntu-22.04-arm` | yes |
+| `whisper-<tag>-windows-x64-slim.zip` | `windows-2022` | yes |
+| `whisper-<tag>-windows-arm64-slim.zip` | `windows-2022` (cross, `amd64_arm64`) | best-effort |
+| `whisper-<tag>-macos-x64-slim.tar.gz` | `macos-15-intel` | yes |
+| `whisper-<tag>-macos-arm64-slim.tar.gz` | `macos-26` | yes |
 
 **Slim bundles** contain only `whisper-server` + the whisper shared library
 (NO `libggml*`): whisper is compiled against the ggml source tree of the paired
-`unslothai/llama.cpp` release (the `llama_tag` resolved above), and at install
-time the Studio installer links every `libggml*` from that llama install's bin
-dir into the whisper bin dir, where ggml's registry dlopens its backend
-modules. Their manifest entries carry `install_kind: "slim"` plus
-`requires_llama_tag` / `requires_ggml_version` / `requires_ggml_sonames` so the
-installer can verify the pairing before choosing slim; with no compatible llama
-install it falls back to a fat bundle. This transition release still publishes
-every fat bundle alongside the slim set. CI validates each slim bundle on the
-free runner by wiring it to the same-tag llama cpu bundle
-(`validate_bundle.py --ggml-dir`); GPU-side validation is skipped, as for fat
-GPU bundles.
+`unslothai/llama.cpp` release (the `llama_tag` resolved above; the vendored
+`ggml/` dir is swapped before configuring), and at install time the Studio
+installer links every `libggml*` from that llama install's bin dir into the
+whisper bin dir, where the dynamic loader (and, for dlopen modules, ggml's
+registry) finds them. Because the llama install carries every ggml backend,
+each slim bundle serves **every accelerator on its platform**: CUDA, HIP,
+Vulkan and the CPU variants on Linux/Windows, Metal and CPU on macOS.
 
-The CUDA runtime (`libcudart`/`libcublas`) is intentionally **not** bundled;
-the installer pairs it with the user's PyTorch CUDA runtime via `runtime_line`.
-ROCm bundles ship their runtime libs and `rocblas`/`hipblaslt` kernel dirs
-co-located with `$ORIGIN` rpath.
+All slices build shared (`BUILD_SHARED_LIBS=ON`, `GGML_BACKEND_DL=ON`,
+`GGML_CPU_ALL_VARIANTS=OFF`, no accelerator toolkits; the in-tree CPU backend
+exists only to link the build and is discarded at packaging). The rpath is
+`$ORIGIN` on Linux and `@loader_path` on macOS (Windows resolves DLLs from the
+executable's directory), so the linked-in llama libraries resolve from the
+bundle dir itself. macOS builds pin `-DGGML_METAL=OFF -DWHISPER_COREML=OFF`
+plus the same deployment targets as the previous fat macOS jobs (arm64 `14.0`,
+x64 `13.3`).
+
+`whisper-<tag>-windows-arm64-slim.zip` is cross-compiled on the x64 runner with
+clang (`cmake/arm64-windows-llvm.cmake`). It cannot be run/validated on the x64
+runner, so it ships **best-effort** (`continue-on-error`): a failed arm64 leg
+is skipped and does not block the release.
+
+Manifest entries carry `install_kind: "slim"` plus `requires_llama_tag` /
+`requires_ggml_version` / `requires_ggml_sonames` so the installer can verify
+the pairing before wiring the bundle. `requires_ggml_sonames` is the exact list
+of library filenames that must exist in the paired llama bin dir for the loader
+to bring the bundle up in a lib-in-same-dir layout (on macOS this includes the
+backend dylibs that llama's `libggml.0.dylib` itself loads via `@rpath`).
+
+CI validates each slim bundle on its free runner with the exact consumer
+wiring (`validate_bundle.py --ggml-dir`): Linux/Windows x64 against the
+same-tag llama `app-<llama_tag>-<os>-<arch>-cpu` bundle, macOS against the
+same-tag `llama-<llama_tag>-bin-macos-<arch>` bundle. GPU-side validation on
+other accelerators is skipped, as it was for fat GPU bundles.
 
 ## Asset naming contract
 
@@ -143,7 +133,8 @@ whisper-<tag>-<os>-<arch>-<accel>.<ext>
 - `<tag>`   packaging tag, e.g. `v1.9.1-unsloth.1`
 - `<os>`    `linux` | `macos` | `windows`
 - `<arch>`  `x64` | `arm64`
-- `<accel>` `cpu` | `metal` | `vulkan` | `slim` | a CUDA profile (`cuda12-portable`, ...) | `rocm-<gfx>` (`rocm-gfx110X`, ...)
+- `<accel>` `slim` (the only published accel since the slim-only model; old
+  releases keep their fat `cpu`/`metal`/`vulkan`/`cuda*`/`rocm-*` assets)
 - `<ext>`   `tar.gz` on Unix, `zip` on Windows
 
 Each release also carries:
@@ -159,6 +150,7 @@ Each release also carries:
 {
   "schema_version": 1,
   "component": "whisper.cpp",
+  "paired_llama_tag": "<llama_tag>",
   "source_repo": "unslothai/whisper.cpp",
   "source_commit": "<40-hex>",
   "upstream_repo": "ggml-org/whisper.cpp",
@@ -168,29 +160,34 @@ Each release also carries:
   "studio_protocol": { "...": "see below" },
   "artifacts": [
     {
-      "asset": "whisper-v1.9.1-unsloth.1-linux-x64-cuda12-portable.tar.gz",
-      "os": "linux", "arch": "x64", "backend": "cuda",
-      "accel": "cuda12-portable", "install_kind": "linux-x64-cuda",
-      "runtime_line": "cuda12", "coverage_class": "portable",
-      "supported_sms": ["70","75","80","86","89","90","100","103","120"],
-      "min_sm": 70, "max_sm": 120,
+      "asset": "whisper-v1.9.1-unsloth.1-linux-x64-slim.tar.gz",
+      "os": "linux", "arch": "x64", "backend": "slim",
+      "accel": "slim", "install_kind": "slim",
+      "runtime_line": null, "coverage_class": null,
+      "supported_sms": null, "min_sm": null, "max_sm": null,
       "gfx_target": null, "mapped_targets": null,
       "min_os": "glibc-2.35",
-      "sha256": "<hex>"
+      "sha256": "<hex>",
+      "requires_llama_tag": "<llama_tag>",
+      "requires_ggml_version": "0.17.0",
+      "requires_ggml_sonames": ["libggml.so.0", "libggml-base.so.0"]
     }
   ]
 }
 ```
 
-CPU/Vulkan/Metal entries set `runtime_line`/`coverage_class`/`supported_sms`/
-`gfx_target` to `null`; ROCm entries set `gfx_target` + `mapped_targets` (the
-concrete gfx list the umbrella target compiles for). Slim entries set
-`install_kind` to `"slim"` and add `requires_llama_tag`,
-`requires_ggml_version` and `requires_ggml_sonames` (`["libggml.so.0",
-"libggml-base.so.0"]` on Linux, `["ggml.dll", "ggml-base.dll"]` on Windows);
-the manifest's top level records the same pairing as `paired_llama_tag`. `whisper-prebuilt-sha256.json`
+Every published entry is a slim entry: exactly one per os/arch with
+`backend: "slim"` (the consumer maps any accel, including cpu and metal, onto
+it; there are no per-accel slim entries). `requires_ggml_sonames` is
+per-platform: `["libggml.so.0", "libggml-base.so.0"]` on Linux, `["ggml.dll",
+"ggml-base.dll"]` on Windows, and on macOS the full dylib closure the loader
+needs (`libggml.0.dylib`, `libggml-base.0.dylib`, `libggml-cpu.0.dylib`,
+`libggml-blas.0.dylib`, `libggml-rpc.0.dylib`, plus `libggml-metal.0.dylib` on
+arm64). `min_os` follows the platform convention: `glibc-2.35`, `windows-10`,
+`macos-14.0` (arm64) / `macos-13.3` (x64). The manifest's top level records the
+pairing as `paired_llama_tag`. `whisper-prebuilt-sha256.json`
 is a flat `name -> {kind, repo, sha256, source_commit, upstream_tag}` index
-covering every bundle, the two source archives and the manifest itself.
+covering the six slim bundles, the two source archives and the manifest itself.
 
 Both sidecars are generated by `scripts/package_bundle.py --emit-manifest
 --emit-sha256` from the bundles' **embedded** `UNSLOTH_WHISPER_PREBUILT_INFO.json`,
@@ -243,37 +240,39 @@ freshly built archive on its build runner:
    and a non-empty JSON `text`.
 4. Repeat step 3 with `--no-gpu` so the CPU fallback path is proven.
 
-This gate runs on the **P0** jobs (CPU Linux x64/arm64, Windows x64, macOS
-x64/arm64), whose native runners can execute the binary. The **P1 GPU** jobs
-(CUDA / ROCm / Vulkan) are built, packaged and uploaded **un-run**, exactly like
-unslothai/llama.cpp's GPU release jobs: their GitHub-hosted build runners have no
-GPU and no NVIDIA/AMD driver, so a co-located GPU backend module cannot resolve
-its host driver there and there is nothing meaningful to validate. **Real GPU
-inference** (step 3 with a live device) requires a self-hosted accelerator runner
-and is not wired into the default matrix - see below.
+Slim bundles ship no ggml, so the gate first wires them to the paired llama
+bundle (`--ggml-dir`, the exact linking the Studio installer performs) and then
+runs the same checks: Linux x64/arm64 and Windows x64 against the same-tag
+llama cpu bundle, macOS x64/arm64 against the same-tag llama macos bundle
+(whose ggml carries the statically-registered cpu/blas/metal backends).
+Windows arm64 is cross-compiled and cannot execute on its x64 build runner, so
+it ships un-run and best-effort. **Real GPU inference** (step 3 with a live
+device) requires a self-hosted accelerator runner and is not wired into the
+default matrix - see below.
 
 ## Runners and secrets you must provide
 
 Everything below is the repo owner's to supply; confirm before relying on it.
 
-- **P0 needs no extra secrets or self-hosted runners.** It uses only
-  GitHub-hosted runners (`ubuntu-22.04`, `ubuntu-22.04-arm`, `windows-2022`,
-  `macos-14`, `macos-15-intel`) and the built-in `GITHUB_TOKEN`.
+- **The slim release needs no extra secrets or self-hosted runners.** It uses
+  only GitHub-hosted runners (`ubuntu-22.04`, `ubuntu-22.04-arm`,
+  `windows-2022`, `macos-26`, `macos-15-intel`) and the built-in
+  `GITHUB_TOKEN`.
 - **Runner label assumptions** (confirm they exist in your org / adjust if the
   images have been renamed): `ubuntu-22.04`, `ubuntu-22.04-arm`,
-  `ubuntu-24.04-arm` (CUDA arm64), `windows-2022`, `windows-latest` (ROCm),
-  `macos-14` (arm64 Metal), `macos-15-intel` (x64).
+  `windows-2022`, `macos-26` (arm64), `macos-15-intel` (x64).
 - **Real GPU validation is NOT enabled by default.** To run
   `validate_bundle.py --gpu` (a live transcription on a device) you must add
   self-hosted runners labelled for each accelerator (e.g. an NVIDIA runner, an
   AMD ROCm runner, a Vulkan-capable runner) and add a job that downloads the
-  built bundle artifact and runs `validate_bundle.py --gpu` on that runner.
-  Until then GPU bundles ship without a build-time runtime gate (built and
-  packaged only), as with unslothai/llama.cpp.
+  built slim bundle artifact, wires it to the matching llama bundle with
+  `--ggml-dir` and runs `validate_bundle.py --gpu` on that runner. Until then
+  accelerator paths ship gated only by the CPU-side wiring proof, as with
+  unslothai/llama.cpp.
 - **Code signing / notarization is NOT configured.** macOS bundles are unsigned
   and unnotarized, and Windows binaries are unsigned. If Studio needs signed
   binaries, add your Apple Developer ID / Authenticode secrets and signing steps
-  to the macOS and Windows children.
+  to the slim child's macOS and Windows jobs.
 - **First release should be pinned, not followed blindly.** Publish
   `v1.9.1-unsloth.1` with `publish=true`, review the assets, then record the
   release id + per-asset sha256 in Studio's `studio/whisper_prebuilt_pins.json`

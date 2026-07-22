@@ -126,7 +126,9 @@ class PlatformStrategy:
     # Directories of runtime data (ROCm kernel libraries) shipped wholesale.
     data_dirs = ("rocblas", "hipblaslt")
     # Slim bundles ship only these whisper pieces; the paired llama.cpp install
-    # provides every ggml object at runtime under these sonames.
+    # provides every ggml object at runtime under these sonames. The per-build
+    # GGML_SONAMES env / --ggml-sonames flag overrides the default list (used
+    # on macOS, where the contract differs per arch: x64 has no metal dylib).
     whisper_lib_patterns = ("libwhisper.so*",)
     ggml_sonames = ("libggml.so.0", "libggml-base.so.0")
 
@@ -179,6 +181,11 @@ class MacOSStrategy(PlatformStrategy):
     rpath = "@loader_path"
     lib_suffix_re = r"\.dylib$"
     whisper_lib_patterns = ("libwhisper*.dylib",)
+    # Direct references only (what whisper-server/libwhisper link). The slim
+    # macOS jobs pass GGML_SONAMES with the full per-arch closure instead: the
+    # paired llama macos bundles carry statically-registered backend dylibs
+    # (cpu/blas/metal/rpc) that llama's libggml.0.dylib itself loads via
+    # @rpath, so dyld needs those names in the bin dir too.
     ggml_sonames = ("libggml.0.dylib", "libggml-base.0.dylib")
 
     def local_needed(self, path: Path, bin_dir: Path) -> list[str]:
@@ -414,7 +421,7 @@ def write_metadata(stage: Path, strategy: PlatformStrategy, cfg: dict, asset: st
             "install_kind": "slim",
             "requires_llama_tag": cfg["llama_tag"],
             "requires_ggml_version": cfg["ggml_version"],
-            "requires_ggml_sonames": list(strategy.ggml_sonames),
+            "requires_ggml_sonames": list(cfg.get("ggml_sonames") or strategy.ggml_sonames),
             "ggml_source": f"unslothai/llama.cpp@{cfg['llama_tag']}:/ggml",
         })
     (stage / INFO_NAME).write_text(json.dumps(info, indent=2))
@@ -513,6 +520,10 @@ def do_package(args: argparse.Namespace) -> int:
                  else (env("SLIM", "").lower() in ("1", "true", "on"))),
         "llama_tag": args.llama_tag or env("LLAMA_TAG") or "",
         "ggml_version": args.ggml_version or env("GGML_VERSION") or "",
+        # Optional override of the platform-default requires_ggml_sonames
+        # (comma/space-separated). The macOS slim jobs use it per arch.
+        "ggml_sonames": [s for s in re.split(r"[ ,;]+", args.ggml_sonames
+                                             or env("GGML_SONAMES") or "") if s],
     }
     missing = [k for k in ("bin_dir", "src_dir", "out_dir", "tag", "upstream_tag",
                            "commit", "accel", "backend") if not cfg[k]]
@@ -679,6 +690,8 @@ def main() -> int:
     ap.add_argument("--slim", dest="slim", action="store_true", default=None)
     ap.add_argument("--llama-tag", help="paired unslothai/llama.cpp release tag")
     ap.add_argument("--ggml-version", help="ggml version compiled against (major.minor.patch)")
+    ap.add_argument("--ggml-sonames", help="override requires_ggml_sonames "
+                    "(comma/space-separated library filenames)")
     args = ap.parse_args()
 
     if args.emit_manifest or args.emit_sha256:
