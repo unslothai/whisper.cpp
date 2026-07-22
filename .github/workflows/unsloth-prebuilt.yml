@@ -19,10 +19,10 @@ name: Unsloth whisper prebuilt (full release)
 # second copy of every ggml backend inside whisper bundles bought nothing.
 # The workflow files are kept on disk for reference and ad-hoc dispatch only.
 #
-# P0 atomicity: the `assemble` job hard-requires the slim child. Inside it,
-# every slice except windows/arm64 (cross-built, best-effort) is required; the
-# "Verify P0 coverage" gate below refuses to publish unless the full required
-# slim set exists at one tag.
+# P0 atomicity: the `assemble` job hard-requires the slim child. Every slice
+# is required (windows/arm64 builds natively on windows-11-arm now, so it is
+# no longer best-effort); the "Verify P0 coverage" gate below refuses to
+# publish unless the full required slim set exists at one tag.
 #
 # Immutability: `resolve` dereferences the requested upstream tag to an exact
 # commit SHA and records it. Every child builds that one stamped source tree
@@ -222,11 +222,11 @@ jobs:
   assemble:
     name: Assemble metadata + publish
     needs: [resolve, build-slim]
-    # P0 gate: the slim child is the release. Its windows/arm64 slice is
-    # continue-on-error inside the child (cross-built, best-effort), so a
-    # build-slim success still hard-implies every required slice; the "Verify
-    # P0 coverage" step below re-checks the required asset set by name. A slim
-    # child failure short-circuits here and nothing is published.
+    # P0 gate: the slim child is the release. Every slice (incl. windows/arm64,
+    # now built natively on windows-11-arm) is required, so a build-slim
+    # success hard-implies every slice; the "Verify P0 coverage" step below
+    # re-checks the required asset set by name. A slim child failure
+    # short-circuits here and nothing is published.
     if: >-
       always()
       && needs.resolve.result == 'success'
@@ -297,13 +297,13 @@ jobs:
         run: |
           set -eu
           TAG='${{ needs.resolve.outputs.tag }}'
-          # Required slim set (windows/arm64 is cross-built best-effort and may
-          # be absent without blocking the release).
+          # Required slim set: every os/arch slice, no exceptions.
           fail=0
           for f in \
             "whisper-${TAG}-linux-x64-slim.tar.gz" \
             "whisper-${TAG}-linux-arm64-slim.tar.gz" \
             "whisper-${TAG}-windows-x64-slim.zip" \
+            "whisper-${TAG}-windows-arm64-slim.zip" \
             "whisper-${TAG}-macos-x64-slim.tar.gz" \
             "whisper-${TAG}-macos-arm64-slim.tar.gz"; do
             [ -s "dist/$f" ] || { echo "ERROR: missing required P0 asset $f" >&2; fail=1; }
