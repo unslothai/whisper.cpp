@@ -69,9 +69,13 @@ def wire_ggml(bundle: Path, ggml_dir: Path) -> None:
     if not ggml_dir.is_dir():
         sys.exit(f"ERROR: --ggml-dir is not a directory: {ggml_dir}")
     names: set[str] = set()
-    for pat in ("libggml*.so", "libggml*.so.*", "libggml*.dylib", "ggml*.dll"):
+    # libomp*.dll rides along: llama's clang-built windows-arm64 ggml-base.dll
+    # imports libomp140.aarch64.dll (shipped in the llama bundle, never a
+    # system DLL), so the loader needs it next to the exe too. MSVC x64 uses
+    # vcomp140.dll from System32 instead, hence the pattern simply not matching.
+    for pat in ("libggml*.so", "libggml*.so.*", "libggml*.dylib", "ggml*.dll", "libomp*.dll"):
         names.update(p.name for p in ggml_dir.glob(pat))
-    if not names:
+    if not any(n.startswith(("libggml", "ggml")) for n in names):
         sys.exit(f"ERROR: no ggml libraries (libggml* / ggml*.dll) in {ggml_dir}")
     wired = 0
     for name in sorted(names):
