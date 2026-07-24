@@ -112,8 +112,12 @@ runner, so it ships **best-effort** (`continue-on-error`): a failed arm64 leg
 is skipped and does not block the release.
 
 Manifest entries carry `install_kind: "slim"` plus `requires_llama_tag` /
-`requires_ggml_version` / `requires_ggml_sonames` so the installer can verify
-the pairing before wiring the bundle. `requires_ggml_sonames` is the exact list
+`requires_ggml_commit` / `requires_ggml_version` / `requires_ggml_sonames` so
+the installer can verify the pairing before wiring the bundle. Fork tags are
+`b<upstream_build>-mix-<ggml_commit>`; `requires_ggml_commit` records the
+`-mix-` ggml commit, which is the ABI the slim bundle links against. The
+installer pairs on that ggml commit, not the whole tag, so a newer llama build
+that keeps the same ggml still backs the bundle. `requires_ggml_sonames` is the exact list
 of library filenames that must exist in the paired llama bin dir for the loader
 to bring the bundle up in a lib-in-same-dir layout (on macOS this includes the
 backend dylibs that llama's `libggml.0.dylib` itself loads via `@rpath`).
@@ -151,6 +155,7 @@ Each release also carries:
   "schema_version": 1,
   "component": "whisper.cpp",
   "paired_llama_tag": "<llama_tag>",
+  "paired_ggml_commit": "<ggml_commit>",
   "source_repo": "unslothai/whisper.cpp",
   "source_commit": "<40-hex>",
   "upstream_repo": "ggml-org/whisper.cpp",
@@ -169,6 +174,7 @@ Each release also carries:
       "min_os": "glibc-2.35",
       "sha256": "<hex>",
       "requires_llama_tag": "<llama_tag>",
+      "requires_ggml_commit": "<ggml_commit>",
       "requires_ggml_version": "0.17.0",
       "requires_ggml_sonames": ["libggml.so.0", "libggml-base.so.0"]
     }
@@ -185,7 +191,8 @@ needs (`libggml.0.dylib`, `libggml-base.0.dylib`, `libggml-cpu.0.dylib`,
 `libggml-blas.0.dylib`, `libggml-rpc.0.dylib`, plus `libggml-metal.0.dylib` on
 arm64). `min_os` follows the platform convention: `glibc-2.35`, `windows-10`,
 `macos-14.0` (arm64) / `macos-13.3` (x64). The manifest's top level records the
-pairing as `paired_llama_tag`. `whisper-prebuilt-sha256.json`
+pairing as `paired_llama_tag` and its ggml commit as `paired_ggml_commit`.
+`whisper-prebuilt-sha256.json`
 is a flat `name -> {kind, repo, sha256, source_commit, upstream_tag}` index
 covering the six slim bundles, the two source archives and the manifest itself.
 

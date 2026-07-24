@@ -370,6 +370,19 @@ def _coverage(cfg: dict) -> dict:
             "gfx_target": None, "mapped_targets": None}
 
 
+def paired_ggml_commit(llama_tag: str | None) -> str | None:
+    """The ggml commit a llama.cpp fork tag was built against. Fork tags are
+    "b<upstream_build>-mix-<ggml_commit>"; the commit after "-mix-" fixes the
+    ggml ABI the slim bundle links against, so the installer pairs on it rather
+    than the build number. None when the tag has no "-mix-" marker."""
+    if not llama_tag:
+        return None
+    marker = "-mix-"
+    idx = llama_tag.rfind(marker)
+    end = idx + len(marker)
+    return llama_tag[end:] if idx >= 0 and end < len(llama_tag) else None
+
+
 def write_metadata(stage: Path, strategy: PlatformStrategy, cfg: dict, asset: str,
                    cov: dict) -> None:
     short = cfg["commit"][:7]
@@ -420,6 +433,7 @@ def write_metadata(stage: Path, strategy: PlatformStrategy, cfg: dict, asset: st
         info.update({
             "install_kind": "slim",
             "requires_llama_tag": cfg["llama_tag"],
+            "requires_ggml_commit": paired_ggml_commit(cfg["llama_tag"]),
             "requires_ggml_version": cfg["ggml_version"],
             "requires_ggml_sonames": list(cfg.get("ggml_sonames") or strategy.ggml_sonames),
             "ggml_source": f"unslothai/llama.cpp@{cfg['llama_tag']}:/ggml",
@@ -482,8 +496,10 @@ def manifest_entry(info: dict, sha256: str) -> dict:
         "sha256": sha256,
     }
     if info.get("install_kind") == "slim":
-        # Pairing requirements the installer checks before choosing slim.
+        # Pairing requirements the installer checks before choosing slim. The
+        # ggml commit is the ABI key; the installer pairs on it, not the tag.
         entry["requires_llama_tag"] = info.get("requires_llama_tag")
+        entry["requires_ggml_commit"] = info.get("requires_ggml_commit")
         entry["requires_ggml_version"] = info.get("requires_ggml_version")
         entry["requires_ggml_sonames"] = info.get("requires_ggml_sonames")
     return entry
@@ -604,6 +620,7 @@ def do_aggregate(args: argparse.Namespace) -> int:
         "schema_version": 1,
         "component": COMPONENT,
         "paired_llama_tag": args.llama_tag or None,
+        "paired_ggml_commit": paired_ggml_commit(args.llama_tag),
         "source_repo": args.source_repo,
         "source_repo_url": f"https://github.com/{args.source_repo}",
         "source_commit": args.commit,
