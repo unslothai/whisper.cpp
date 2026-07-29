@@ -35,9 +35,13 @@ on:
   # `*/5` fires on days 1,6,11,16,21,26,31, so the spacing resets at each month
   # boundary -- close enough given upstream tags land weeks apart. A scheduled
   # run resolves the newest aged upstream release and publishes it; if that
-  # release is already published the run is a cheap no-op (resolve sets
-  # exists=true and every build/assemble job is skipped). Manual dispatch can
-  # still build or publish any tag on demand.
+  # release is already published AND still pairs with the newest published
+  # unslothai/llama.cpp ggml, the run is a cheap no-op (resolve sets exists=true
+  # and every build/assemble job is skipped). If llama has moved to a new ggml
+  # commit since, resolve rolls the packaging suffix to the next free ordinal
+  # and republishes, so the slim bundles keep loading against the llama install
+  # Studio actually ships. Manual dispatch can still build or publish any tag on
+  # demand, and never auto-rolls the suffix it was given.
   schedule:
     - cron: '41 22 */5 * *'
   workflow_dispatch:
@@ -101,6 +105,20 @@ jobs:
           AGE_H='${{ github.event.inputs.min_age_hours }}'
           [ -n "$AGE_H" ] || AGE_H=6
 
+          # The ggml ABI a llama fork tag carries. Fork tags are
+          # "b<upstream_build>-mix-<ggml_commit>"; only the part after the last
+          # "-mix-" fixes the ggml a slim whisper bundle links against (the build
+          # number also moves for fork PRs outside ggml). Mirrors
+          # _llama_ggml_commit() in studio/install_whisper_prebuilt.py -- a tag
+          # with no usable marker falls back to itself, so it pairs on exact
+          # equality only, exactly as the installer treats it.
+          ggml_commit() {
+            case "$1" in
+              *-mix-?*) printf '%s' "${1##*-mix-}" ;;
+              *)        printf '%s' "$1" ;;
+            esac
+          }
+
           # Resolve "latest" (the default, and what every scheduled run uses) to
           # the newest published upstream release that has been public for >=
           # AGE_H hours -- a supply-chain aging window so a yanked or malicious
@@ -159,6 +177,57 @@ jobs:
           EXISTS=false
           if [ "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null || true)" = "false" ]; then
             EXISTS=true
+          fi
+
+          # Slim bundles only load against a llama install whose ggml ABI they
+          # were built for, so a published packaging tag goes stale the moment
+          # unslothai/llama.cpp ships a new ggml commit -- the installer's
+          # llama_runtime_pairs() then rejects it and Studio setup reports
+          # "no compatible prebuilt", falling back to Transformers dictation.
+          # The packaging tag encodes only the upstream whisper version, so
+          # `exists` alone would make every scheduled run a no-op for as long
+          # as upstream stays on one tag, however far llama drifts. Compare the
+          # published release's own pairing against the llama tag resolved
+          # above and, when it no longer pairs, roll the packaging suffix to the
+          # next free ordinal so the schedule republishes.
+          #
+          # Only schedules auto-roll. A manual dispatch names its packaging
+          # suffix deliberately (rebuilding one tag, pinning an older llama),
+          # and silently publishing a different tag than asked for would be a
+          # surprise. Immutability is preserved either way: an already-published
+          # tag is never rebuilt, only superseded.
+          if [ "$EXISTS" = "true" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            PUBLISHED_LT="$(gh release download "$TAG" --repo "$REPO" \
+              --pattern whisper-prebuilt-manifest.json --output - 2>/dev/null \
+              | jq -r 'first(.artifacts[]? | select(.install_kind == "slim") | .requires_llama_tag) // empty' || true)"
+            if [ -z "$PUBLISHED_LT" ]; then
+              # Unreadable manifest, or a pre-slim release with no pairing to go
+              # stale. Neither is evidence that a rebuild is needed, so stay a
+              # no-op rather than republish on a guess.
+              echo "note: ${TAG} publishes no slim pairing to compare; leaving exists=true"
+            elif [ "$(ggml_commit "$PUBLISHED_LT")" = "$(ggml_commit "$LT")" ]; then
+              echo "${TAG} pairs with ${LT} (ggml $(ggml_commit "$LT")); nothing to do"
+            else
+              PREFIX="${SUFFIX%.*}"
+              ORDINAL="${SUFFIX##*.}"
+              if [ "$PREFIX" = "$SUFFIX" ] || ! printf '%s' "$ORDINAL" | grep -qE '^[0-9]+$'; then
+                echo "note: packaging suffix '${SUFFIX}' is not <prefix>.<N>; cannot roll it automatically" >&2
+              else
+                # Highest published ordinal + 1, not $ORDINAL + 1: a manual
+                # dispatch may already have taken the next few, and reusing a
+                # published tag would break immutability.
+                NEXT="$(gh api "repos/${REPO}/releases?per_page=100" \
+                  --jq "[.[] | select(.draft==false) | .tag_name
+                        | select(type == \"string\" and startswith(\"${UT}-${PREFIX}.\"))
+                        | ltrimstr(\"${UT}-${PREFIX}.\")
+                        | select(test(\"^[0-9]+$\")) | tonumber] | (max // 0) + 1")"
+                echo "${TAG} requires llama ${PUBLISHED_LT} but ${LT} is current;" \
+                     "rebuilding as ${UT}-${PREFIX}.${NEXT}"
+                SUFFIX="${PREFIX}.${NEXT}"
+                TAG="${UT}-${SUFFIX}"
+                EXISTS=false
+              fi
+            fi
           fi
 
           # Check out the exact commit and stamp cmake/build-info.cmake so the
