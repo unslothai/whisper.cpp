@@ -52,9 +52,9 @@ on:
         required: false
         type: string
       packaging_suffix:
-        description: 'Packaging suffix appended to the tag: <upstream_tag>-<suffix>'
-        default: 'unsloth.1'
-        required: true
+        description: 'Packaging suffix appended to the tag: <upstream_tag>-<suffix> (blank = newest published ordinal for that tag)'
+        default: ''
+        required: false
         type: string
       llama_tag:
         description: 'Paired unslothai/llama.cpp release tag for slim bundles (blank = newest published llama release)'
@@ -101,9 +101,31 @@ jobs:
         run: |
           set -euo pipefail
           UT='${{ github.event.inputs.upstream_tag || 'latest' }}'
-          SUFFIX='${{ github.event.inputs.packaging_suffix || 'unsloth.1' }}'
+          SUFFIX='${{ github.event.inputs.packaging_suffix }}'
           AGE_H='${{ github.event.inputs.min_age_hours }}'
           [ -n "$AGE_H" ] || AGE_H=6
+
+          # A blank packaging suffix -- every scheduled run, and any dispatch
+          # that does not name one -- means the NEWEST published ordinal for
+          # this upstream tag, not ".1". The staleness comparison further down
+          # reads the manifest of whatever TAG resolves to here, and only the
+          # newest ordinal carries the current slim pairing: ".1" predates the
+          # slim-only model entirely, so its manifest has no requires_llama_tag,
+          # the comparison bails with "publishes no slim pairing to compare",
+          # and the roll can never fire however far llama drifts. That is why
+          # v1.9.1-unsloth.5 stayed pinned to b10173-mix-2c8b9c1 while
+          # unslothai/llama.cpp moved on and Studio reported no compatible
+          # prebuilt.
+          if [ -z "$SUFFIX" ]; then
+            NEWEST_ORD="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq "[.[] | select(.draft==false) | .tag_name
+                    | select(startswith(\"${UT}-unsloth.\"))
+                    | ltrimstr(\"${UT}-unsloth.\")
+                    | select(test(\"^[0-9]+$\")) | tonumber] | max // empty")"
+            [ -n "$NEWEST_ORD" ] || NEWEST_ORD=1
+            SUFFIX="unsloth.${NEWEST_ORD}"
+            echo "no packaging suffix given; using newest published ordinal ${SUFFIX}"
+          fi
 
           # The ggml ABI a llama fork tag carries. Fork tags are
           # "b<upstream_build>-mix-<ggml_commit>"; only the part after the last
