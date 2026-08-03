@@ -37,6 +37,7 @@ on:
       commit:         { required: true,  type: string }
       source_artifact: { required: true,  type: string }
       llama_tag:      { required: true,  type: string }
+      llama_ggml_tree: { required: false, type: string, default: '' }
 
 permissions:
   contents: read
@@ -143,6 +144,7 @@ jobs:
         env:
           SLIM: "1"
           LLAMA_TAG: ${{ inputs.llama_tag }}
+          LLAMA_GGML_TREE: ${{ inputs.llama_ggml_tree }}
           OS: linux
           ARCH: ${{ matrix.arch }}
           ACCEL: slim
@@ -319,6 +321,7 @@ jobs:
         env:
           SLIM: "1"
           LLAMA_TAG: ${{ inputs.llama_tag }}
+          LLAMA_GGML_TREE: ${{ inputs.llama_ggml_tree }}
           OS: windows
           ARCH: ${{ matrix.arch }}
           ACCEL: slim
@@ -486,6 +489,7 @@ jobs:
         env:
           SLIM: "1"
           LLAMA_TAG: ${{ inputs.llama_tag }}
+          LLAMA_GGML_TREE: ${{ inputs.llama_ggml_tree }}
           GGML_SONAMES: ${{ matrix.ggml_sonames }}
           OS: macos
           ARCH: ${{ matrix.arch }}

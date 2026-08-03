@@ -93,6 +93,7 @@ jobs:
       source_artifact: ${{ steps.r.outputs.source_artifact }}
       exists: ${{ steps.r.outputs.exists }}
       llama_tag: ${{ steps.r.outputs.llama_tag }}
+      llama_ggml_tree: ${{ steps.r.outputs.llama_ggml_tree }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -127,13 +128,20 @@ jobs:
             echo "no packaging suffix given; using newest published ordinal ${SUFFIX}"
           fi
 
-          # The ggml ABI a llama fork tag carries. Fork tags are
-          # "b<upstream_build>-mix-<ggml_commit>"; only the part after the last
-          # "-mix-" fixes the ggml a slim whisper bundle links against (the build
-          # number also moves for fork PRs outside ggml). Mirrors
-          # _llama_ggml_commit() in studio/install_whisper_prebuilt.py -- a tag
-          # with no usable marker falls back to itself, so it pairs on exact
-          # equality only, exactly as the installer treats it.
+          # The real ABI key: the git tree id of ggml/ in the llama release we
+          # compile against, published in its manifest. Empty for releases cut
+          # before llama started recording it.
+          llama_ggml_tree() {
+            gh release download "$1" --repo unslothai/llama.cpp \
+              --pattern llama-prebuilt-manifest.json --output - 2>/dev/null \
+              | jq -r '.ggml_tree // empty' 2>/dev/null || true
+          }
+
+          # Fallback only. The "-mix-" suffix looks like a ggml commit but is a
+          # hash of llama's pinned PR set, so it stays constant while the base
+          # tag and ggml move: 53618c5 alone covers b9909 through b10001. Used
+          # when a manifest predates ggml_tree, where the alternative is a
+          # rebuild loop.
           ggml_commit() {
             case "$1" in
               *-mix-?*) printf '%s' "${1##*-mix-}" ;;
@@ -182,6 +190,12 @@ jobs:
           printf '%s' "$LT" | grep -qE '^[A-Za-z0-9._-]+$' \
             || { echo "refusing llama tag '$LT'" >&2; exit 1; }
 
+          # Empty for llama releases cut before ggml_tree was recorded; the
+          # comparison below falls back to the suffix in that case.
+          LT_TREE="$(llama_ggml_tree "$LT")"
+          printf '%s' "$LT_TREE" | grep -qE '^[0-9a-f]{40}$' || LT_TREE=""
+          echo "paired llama ${LT} ggml tree: ${LT_TREE:-unknown}"
+
           # Dereference the tag to an exact commit (annotated tags resolve to the
           # tag object first, then to the commit it points at).
           REF_JSON="$(gh api "repos/ggml-org/whisper.cpp/git/ref/tags/${UT}")"
@@ -197,6 +211,7 @@ jobs:
           echo "resolved ${UT} -> ${COMMIT}"
 
           EXISTS=false
+          PAIRED=false
           if [ "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null || true)" = "false" ]; then
             EXISTS=true
           fi
@@ -219,17 +234,27 @@ jobs:
           # surprise. Immutability is preserved either way: an already-published
           # tag is never rebuilt, only superseded.
           if [ "$EXISTS" = "true" ] && [ "${{ github.event_name }}" = "schedule" ]; then
-            PUBLISHED_LT="$(gh release download "$TAG" --repo "$REPO" \
-              --pattern whisper-prebuilt-manifest.json --output - 2>/dev/null \
-              | jq -r 'first(.artifacts[]? | select(.install_kind == "slim") | .requires_llama_tag) // empty' || true)"
+            PUBLISHED_MANIFEST="$(gh release download "$TAG" --repo "$REPO" \
+              --pattern whisper-prebuilt-manifest.json --output - 2>/dev/null || true)"
+            PUBLISHED_LT="$(jq -r 'first(.artifacts[]? | select(.install_kind == "slim") | .requires_llama_tag) // empty' <<<"$PUBLISHED_MANIFEST" 2>/dev/null || true)"
+            PUBLISHED_TREE="$(jq -r 'first(.artifacts[]? | select(.install_kind == "slim") | .requires_ggml_tree) // empty' <<<"$PUBLISHED_MANIFEST" 2>/dev/null || true)"
             if [ -z "$PUBLISHED_LT" ]; then
               # Unreadable manifest, or a pre-slim release with no pairing to go
               # stale. Neither is evidence that a rebuild is needed, so stay a
               # no-op rather than republish on a guess.
               echo "note: ${TAG} publishes no slim pairing to compare; leaving exists=true"
+            elif [ -n "$PUBLISHED_TREE" ] && [ -n "$LT_TREE" ]; then
+              # Both sides know their ggml tree: compare it and nothing else.
+              if [ "$PUBLISHED_TREE" = "$LT_TREE" ]; then
+                echo "${TAG} pairs with ${LT} (ggml tree ${LT_TREE}); nothing to do"
+                PAIRED=true
+              fi
             elif [ "$(ggml_commit "$PUBLISHED_LT")" = "$(ggml_commit "$LT")" ]; then
-              echo "${TAG} pairs with ${LT} (ggml $(ggml_commit "$LT")); nothing to do"
-            else
+              # One side predates ggml_tree. Approximate, and say so.
+              echo "::warning::${TAG} compared against ${LT} on the -mix- suffix, which does not track ggml; treating as paired"
+              PAIRED=true
+            fi
+            if [ "$PAIRED" != "true" ] && [ -n "$PUBLISHED_LT" ]; then
               PREFIX="${SUFFIX%.*}"
               ORDINAL="${SUFFIX##*.}"
               if [ "$PREFIX" = "$SUFFIX" ] || ! printf '%s' "$ORDINAL" | grep -qE '^[0-9]+$'; then
@@ -285,6 +310,7 @@ jobs:
             echo "source_artifact=whisper-source-${TAG}"
             echo "exists=$EXISTS"
             echo "llama_tag=$LT"
+            echo "llama_ggml_tree=$LT_TREE"
           } >> "$GITHUB_OUTPUT"
           echo "Resolved $UT -> $TAG ($COMMIT); release exists=$EXISTS; paired llama=$LT"
 
@@ -309,6 +335,7 @@ jobs:
       commit: ${{ needs.resolve.outputs.commit }}
       source_artifact: ${{ needs.resolve.outputs.source_artifact }}
       llama_tag: ${{ needs.resolve.outputs.llama_tag }}
+      llama_ggml_tree: ${{ needs.resolve.outputs.llama_ggml_tree }}
 
   assemble:
     name: Assemble metadata + publish
@@ -412,7 +439,8 @@ jobs:
             --upstream-tag '${{ needs.resolve.outputs.upstream_tag }}' \
             --commit '${{ needs.resolve.outputs.commit }}' \
             --source-repo "$GITHUB_REPOSITORY" \
-            --llama-tag '${{ needs.resolve.outputs.llama_tag }}'
+            --llama-tag '${{ needs.resolve.outputs.llama_tag }}' \
+            --llama-ggml-tree '${{ needs.resolve.outputs.llama_ggml_tree }}'
           # Drop the per-asset .entry.json sidecars: the manifest supersedes them.
           rm -f dist/*.entry.json
           ls -la dist

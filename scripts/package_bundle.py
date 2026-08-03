@@ -433,6 +433,10 @@ def write_metadata(stage: Path, strategy: PlatformStrategy, cfg: dict, asset: st
         info.update({
             "install_kind": "slim",
             "requires_llama_tag": cfg["llama_tag"],
+            # The ABI key the installer should pair on. requires_ggml_commit is
+            # the old key and is kept only until the installer switches: it is
+            # the "-mix-" suffix, which hashes llama's PR set, not ggml.
+            "requires_ggml_tree": cfg.get("llama_ggml_tree") or None,
             "requires_ggml_commit": paired_ggml_commit(cfg["llama_tag"]),
             "requires_ggml_version": cfg["ggml_version"],
             "requires_ggml_sonames": list(cfg.get("ggml_sonames") or strategy.ggml_sonames),
@@ -499,6 +503,7 @@ def manifest_entry(info: dict, sha256: str) -> dict:
         # Pairing requirements the installer checks before choosing slim. The
         # ggml commit is the ABI key; the installer pairs on it, not the tag.
         entry["requires_llama_tag"] = info.get("requires_llama_tag")
+        entry["requires_ggml_tree"] = info.get("requires_ggml_tree")
         entry["requires_ggml_commit"] = info.get("requires_ggml_commit")
         entry["requires_ggml_version"] = info.get("requires_ggml_version")
         entry["requires_ggml_sonames"] = info.get("requires_ggml_sonames")
@@ -535,6 +540,7 @@ def do_package(args: argparse.Namespace) -> int:
         "slim": (args.slim if args.slim is not None
                  else (env("SLIM", "").lower() in ("1", "true", "on"))),
         "llama_tag": args.llama_tag or env("LLAMA_TAG") or "",
+        "llama_ggml_tree": args.llama_ggml_tree or env("LLAMA_GGML_TREE") or "",
         "ggml_version": args.ggml_version or env("GGML_VERSION") or "",
         # Optional override of the platform-default requires_ggml_sonames
         # (comma/space-separated). The macOS slim jobs use it per arch.
@@ -620,6 +626,7 @@ def do_aggregate(args: argparse.Namespace) -> int:
         "schema_version": 1,
         "component": COMPONENT,
         "paired_llama_tag": args.llama_tag or None,
+        "paired_ggml_tree": args.llama_ggml_tree or None,
         "paired_ggml_commit": paired_ggml_commit(args.llama_tag),
         "source_repo": args.source_repo,
         "source_repo_url": f"https://github.com/{args.source_repo}",
@@ -706,6 +713,8 @@ def main() -> int:
     # aggregate-mode source of the manifest's top-level paired_llama_tag.
     ap.add_argument("--slim", dest="slim", action="store_true", default=None)
     ap.add_argument("--llama-tag", help="paired unslothai/llama.cpp release tag")
+    ap.add_argument("--llama-ggml-tree",
+                    help="git tree id of ggml/ in the paired llama release; the real ABI key")
     ap.add_argument("--ggml-version", help="ggml version compiled against (major.minor.patch)")
     ap.add_argument("--ggml-sonames", help="override requires_ggml_sonames "
                     "(comma/space-separated library filenames)")
