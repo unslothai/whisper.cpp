@@ -112,28 +112,6 @@ jobs:
           AGE_H='${{ github.event.inputs.min_age_hours }}'
           [ -n "$AGE_H" ] || AGE_H=6
 
-          # A blank packaging suffix -- every scheduled run, and any dispatch
-          # that does not name one -- means the NEWEST published ordinal for
-          # this upstream tag, not ".1". The staleness comparison further down
-          # reads the manifest of whatever TAG resolves to here, and only the
-          # newest ordinal carries the current slim pairing: ".1" predates the
-          # slim-only model entirely, so its manifest has no requires_llama_tag,
-          # the comparison bails with "publishes no slim pairing to compare",
-          # and the roll can never fire however far llama drifts. That is why
-          # v1.9.1-unsloth.5 stayed pinned to b10173-mix-2c8b9c1 while
-          # unslothai/llama.cpp moved on and Studio reported no compatible
-          # prebuilt.
-          if [ -z "$SUFFIX" ]; then
-            NEWEST_ORD="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              --jq "[.[] | select(.draft==false) | .tag_name
-                    | select(startswith(\"${UT}-unsloth.\"))
-                    | ltrimstr(\"${UT}-unsloth.\")
-                    | select(test(\"^[0-9]+$\")) | tonumber] | max // empty")"
-            [ -n "$NEWEST_ORD" ] || NEWEST_ORD=1
-            SUFFIX="unsloth.${NEWEST_ORD}"
-            echo "no packaging suffix given; using newest published ordinal ${SUFFIX}"
-          fi
-
           # The real ABI key: the git tree id of ggml/ in the llama release we
           # compile against, published in its manifest. Empty for releases cut
           # before llama started recording it.
@@ -173,6 +151,26 @@ jobs:
           fi
           printf '%s' "$UT" | grep -qE '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' \
             || { echo "refusing non-release upstream tag '$UT' (want vMAJOR.MINOR[.PATCH])" >&2; exit 1; }
+
+          # A blank packaging suffix means the NEWEST published ordinal for this
+          # upstream tag, not ".1". Only the newest ordinal carries the current
+          # slim pairing; ".1" predates the slim model and has no
+          # requires_llama_tag, so the staleness comparison below bails and the
+          # roll never fires however far llama drifts.
+          #
+          # Must run after UT is a concrete tag: resolving it against UT="latest"
+          # matches no releases and silently falls back to ".1", which is the
+          # very bug this is here to prevent.
+          if [ -z "$SUFFIX" ]; then
+            NEWEST_ORD="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq "[.[] | select(.draft==false) | .tag_name
+                    | select(startswith(\"${UT}-unsloth.\"))
+                    | ltrimstr(\"${UT}-unsloth.\")
+                    | select(test(\"^[0-9]+$\")) | tonumber] | max // empty")"
+            [ -n "$NEWEST_ORD" ] || NEWEST_ORD=1
+            SUFFIX="unsloth.${NEWEST_ORD}"
+            echo "no packaging suffix given; using newest published ordinal ${SUFFIX}"
+          fi
           printf '%s' "$SUFFIX" | grep -qE '^[A-Za-z0-9._-]+$' \
             || { echo "refusing packaging suffix '$SUFFIX'" >&2; exit 1; }
           TAG="${UT}-${SUFFIX}"
