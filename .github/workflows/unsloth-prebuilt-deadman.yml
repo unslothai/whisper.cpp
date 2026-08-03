@@ -7,10 +7,10 @@ name: Unsloth prebuilt dead-man check
 # the staleness check found no pairing to compare, decided there was nothing to
 # do, and exited 0. Nothing keyed off job failure can see that.
 #
-# STALE_DAYS is loose because a republish is only needed when the paired llama
-# ggml actually moves. Once the pairing key is a real ggml identity, replace
-# this with a direct "does the newest whisper release still pair with the
-# newest llama release" check.
+# It asks the question Studio setup asks: does the newest whisper release still
+# load against the newest llama release, comparing the ggml tree ids both sides
+# now record. STALE_DAYS survives only as a fallback for releases predating
+# those fields, where the honest answer is that the pairing is unknown.
 
 on:
   schedule:
@@ -22,7 +22,12 @@ permissions:
   issues: write
 
 env:
+  # Only used when the pairing cannot be compared; the pairing check below is
+  # the real signal and does not care how long ago whisper last published.
   STALE_DAYS: '7'
+  # How long llama may sit newer than whisper before that counts as a fault
+  # rather than a rebuild in progress.
+  PAIRING_GRACE_HOURS: '6'
 
 jobs:
   deadman:
@@ -54,15 +59,61 @@ jobs:
           PUB="${LATEST##*$'\t'}"
           AGE_D=$(( ( $(date -u +%s) - $(date -u -d "$PUB" +%s) ) / 86400 ))
 
-          # Report the pairing too: it is what tells a human whether the silence is fine.
-          PAIRED="$(gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern whisper-prebuilt-manifest.json --output - 2>/dev/null \
-            | jq -r 'first(.artifacts[]? | select(.install_kind == "slim") | .requires_llama_tag) // "none"' 2>/dev/null || echo "unreadable")"
-          LLAMA_NOW="$(gh api 'repos/unslothai/llama.cpp/releases?per_page=30' \
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern whisper-prebuilt-manifest.json --output "${RUNNER_TEMP}/w.json" 2>/dev/null || true
+          slim() { jq -r "first(.artifacts[]? | select(.install_kind == \"slim\") | .$1) // empty" \
+                     "${RUNNER_TEMP}/w.json" 2>/dev/null || true; }
+          PAIRED="$(slim requires_llama_tag)"; PAIRED="${PAIRED:-unreadable}"
+          OUR_TREE="$(slim requires_ggml_tree)"
+          LLAMA="$(gh api 'repos/unslothai/llama.cpp/releases?per_page=30' \
             --jq '[.[] | select(.draft==false and .prerelease==false)]
-                  | max_by(.published_at|fromdateiso8601) | .tag_name' 2>/dev/null || echo "unknown")"
-          echo "newest ${TAG} (${AGE_D}d old), pairs with ${PAIRED}; newest llama is ${LLAMA_NOW}"
+                  | max_by(.published_at|fromdateiso8601) | "\(.tag_name)\t\(.published_at)"' 2>/dev/null || true)"
+          LLAMA_NOW="${LLAMA%%$'\t'*}"; LLAMA_PUB="${LLAMA##*$'\t'}"
+          LLAMA_TREE="$(gh release download "${LLAMA_NOW}" --repo unslothai/llama.cpp \
+            --pattern llama-prebuilt-manifest.json --output - 2>/dev/null \
+            | jq -r '.ggml_tree // empty' 2>/dev/null || true)"
+          echo "newest ${TAG} (${AGE_D}d old) requires ggml tree ${OUR_TREE:-unknown} via ${PAIRED}"
+          echo "newest llama ${LLAMA_NOW:-unknown} carries ggml tree ${LLAMA_TREE:-unknown}"
 
+          # The real question is not "has whisper published recently" but "does
+          # what it published still load against the llama Studio installs".
+          # Only ask it when both sides actually state a tree; a release from
+          # before llama recorded one says nothing either way, and guessing
+          # there is how the -mix- comparison got this wrong for five days.
+          if [ -n "$OUR_TREE" ] && [ -n "$LLAMA_TREE" ]; then
+            if [ "$OUR_TREE" = "$LLAMA_TREE" ]; then
+              echo "paired; nothing to do"
+              echo "status=success" >> "$GITHUB_OUTPUT"
+              echo "details=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # A llama release published minutes ago has not had time to wake
+            # whisper and build, so only complain once the rebuild is overdue.
+            LLAMA_AGE_H=$(( ( $(date -u +%s) - $(date -u -d "$LLAMA_PUB" +%s) ) / 3600 ))
+            if [ "$LLAMA_AGE_H" -le "${PAIRING_GRACE_HOURS}" ]; then
+              echo "unpaired, but ${LLAMA_NOW} is only ${LLAMA_AGE_H}h old; within the rebuild window"
+              echo "status=success" >> "$GITHUB_OUTPUT"
+              echo "details=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+            {
+              echo 'details<<ALERT_EOF'
+              echo "The newest whisper prebuilt no longer pairs with the newest llama prebuilt, so Studio setup reports \`no compatible prebuilt\` and falls back to Transformers dictation."
+              echo
+              echo "| | | |"
+              echo "|---|---|---|"
+              echo "| whisper | \`${TAG}\` | needs ggml tree \`${OUR_TREE}\` |"
+              echo "| llama | \`${LLAMA_NOW}\` | ships ggml tree \`${LLAMA_TREE}\` |"
+              echo
+              echo "\`${LLAMA_NOW}\` has been published for ${LLAMA_AGE_H}h and whisper has not rebuilt against it. Check whether llama's notify step fired and whether the dispatch reached this repo."
+              echo 'ALERT_EOF'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # One side does not state a tree, so fall back to plain staleness.
+          echo "pairing not comparable; falling back to the ${STALE_DAYS}d staleness check"
           if [ "$AGE_D" -le "${STALE_DAYS}" ]; then
             echo "status=success" >> "$GITHUB_OUTPUT"
             echo "details=" >> "$GITHUB_OUTPUT"
@@ -91,6 +142,6 @@ jobs:
         with:
           status: ${{ steps.c.outputs.status }}
           key: whisper-prebuilt-stale
-          title: 'No whisper.cpp prebuilt release published recently'
+          title: 'whisper.cpp prebuilts are out of date'
           details: ${{ steps.c.outputs.details }}
           token: ${{ github.token }}
