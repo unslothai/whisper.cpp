@@ -43,7 +43,13 @@ on:
   # Studio actually ships. Manual dispatch can still build or publish any tag on
   # demand, and never auto-rolls the suffix it was given.
   schedule:
-    - cron: '41 22 */5 * *'
+    - cron: '41 22 * * *'
+  # Fired by unslothai/llama.cpp after it publishes. Treated purely as a
+  # wake-up: nothing from client_payload is read, the newest published llama
+  # release is re-resolved from the API instead, so a stale or forged payload
+  # cannot steer the build.
+  repository_dispatch:
+    types: [llama-published]
   workflow_dispatch:
     inputs:
       upstream_tag:
@@ -233,7 +239,7 @@ jobs:
           # and silently publishing a different tag than asked for would be a
           # surprise. Immutability is preserved either way: an already-published
           # tag is never rebuilt, only superseded.
-          if [ "$EXISTS" = "true" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "$EXISTS" = "true" ] && { [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "repository_dispatch" ]; }; then
             PUBLISHED_MANIFEST="$(gh release download "$TAG" --repo "$REPO" \
               --pattern whisper-prebuilt-manifest.json --output - 2>/dev/null || true)"
             PUBLISHED_LT="$(jq -r 'first(.artifacts[]? | select(.install_kind == "slim") | .requires_llama_tag) // empty' <<<"$PUBLISHED_MANIFEST" 2>/dev/null || true)"
@@ -411,7 +417,7 @@ jobs:
           echo "fingerprint verified in $checked bundles"
 
       - name: Verify P0 coverage before publish
-        if: ${{ (inputs.publish || github.event_name == 'schedule') && needs.resolve.outputs.exists != 'true' }}
+        if: ${{ (inputs.publish || github.event_name == 'schedule' || github.event_name == 'repository_dispatch') && needs.resolve.outputs.exists != 'true' }}
         run: |
           set -eu
           TAG='${{ needs.resolve.outputs.tag }}'
@@ -454,7 +460,7 @@ jobs:
           retention-days: 7
 
       - name: Publish GitHub release (draft first, then atomic)
-        if: ${{ (inputs.publish || github.event_name == 'schedule') && needs.resolve.outputs.exists != 'true' }}
+        if: ${{ (inputs.publish || github.event_name == 'schedule' || github.event_name == 'repository_dispatch') && needs.resolve.outputs.exists != 'true' }}
         run: |
           set -eux
           TAG='${{ needs.resolve.outputs.tag }}'
@@ -480,7 +486,7 @@ jobs:
   alert:
     name: Report pipeline health
     needs: [resolve, build-slim, assemble]
-    if: ${{ always() && (github.event_name == 'schedule' || inputs.publish) }}
+    if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || inputs.publish) }}
     runs-on: ubuntu-22.04
     permissions:
       contents: read
