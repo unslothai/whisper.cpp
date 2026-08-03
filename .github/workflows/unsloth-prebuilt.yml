@@ -83,7 +83,14 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.inputs.upstream_tag || 'scheduled' }}-${{ github.event.inputs.packaging_suffix || 'auto' }}
-  cancel-in-progress: false
+  # Automatic wake-ups supersede each other. They all land in one group, so
+  # without this a single run stuck in the runner queue blocks every later
+  # dispatch indefinitely -- the same "whisper quietly stops publishing"
+  # outcome, reached a different way. Superseding costs nothing: the newer run
+  # re-resolves the newest llama release from the API, so anything the older
+  # one was still working out is already out of date. A dispatch that names a
+  # tag is someone building deliberately, and waits its turn instead.
+  cancel-in-progress: ${{ github.event_name == 'schedule' || github.event_name == 'repository_dispatch' }}
 
 jobs:
   resolve:
