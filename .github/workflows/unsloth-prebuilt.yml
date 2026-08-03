@@ -424,3 +424,63 @@ jobs:
             --notes "$NOTES" \
             dist/*
           gh release edit "$TAG" --repo "$REPO" --draft=false
+
+  # Covers red runs. Green runs that publish nothing are covered by
+  # unsloth-prebuilt-deadman.yml, which no failure trigger can see.
+  alert:
+    name: Report pipeline health
+    needs: [resolve, build-slim, assemble]
+    if: ${{ always() && (github.event_name == 'schedule' || inputs.publish) }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - name: Checkout (for the composite action)
+        uses: actions/checkout@v6
+        with: { persist-credentials: false }
+
+      - name: Summarise run
+        id: s
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -uo pipefail
+          # 'skipped' is healthy: an already-published, still-pairing tag skips the build.
+          FAILED="$(jq -r 'to_entries | map(select(.value.result == "failure") | .key) | join(", ")' <<<"$NEEDS_JSON")"
+          if [ -z "$FAILED" ]; then
+            echo "status=success" >> "$GITHUB_OUTPUT"
+            echo "details=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "status=failure" >> "$GITHUB_OUTPUT"
+          REASON="$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --log-failed 2>/dev/null \
+            | grep -aE 'refusing |could not |ERROR: ' \
+            | sed -E 's/^[0-9-]+T[0-9:.]+Z //' | cut -c1-300 | head -5 || true)"
+          {
+            echo 'details<<ALERT_EOF'
+            echo "**Failed jobs:** ${FAILED}"
+            if [ -n "$REASON" ]; then
+              echo
+              echo 'Reported reason:'
+              echo
+              echo '```'
+              echo "$REASON"
+              echo '```'
+            fi
+            echo
+            echo "No whisper release was published. Studio will keep reporting the"
+            echo "previously paired prebuilt, or none at all if the pairing is stale."
+            echo 'ALERT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Alert
+        uses: ./.github/actions/prebuilt-alert
+        with:
+          status: ${{ steps.s.outputs.status }}
+          key: whisper-prebuilt-pipeline
+          title: 'whisper.cpp prebuilt pipeline is failing'
+          details: ${{ steps.s.outputs.details }}
+          token: ${{ github.token }}

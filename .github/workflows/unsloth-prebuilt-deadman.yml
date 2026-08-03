@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Unsloth prebuilt dead-man check
+
+# The worst failure mode here is a green run, not a red one: on 08-01 and 08-02
+# the staleness check found no pairing to compare, decided there was nothing to
+# do, and exited 0. Nothing keyed off job failure can see that.
+#
+# STALE_DAYS is loose because a republish is only needed when the paired llama
+# ggml actually moves. Once the pairing key is a real ggml identity, replace
+# this with a direct "does the newest whisper release still pair with the
+# newest llama release" check.
+
+on:
+  schedule:
+    - cron: '37 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  STALE_DAYS: '7'
+
+jobs:
+  deadman:
+    name: Check publish freshness
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout (for the composite action)
+        uses: actions/checkout@v6
+        with: { persist-credentials: false }
+
+      - name: Check newest published release
+        id: c
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          LATEST="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=30" \
+            --jq '[.[] | select(.draft==false and .prerelease==false)]
+                  | max_by(.published_at|fromdateiso8601)
+                  | "\(.tag_name)\t\(.published_at)"' 2>/dev/null || true)"
+
+          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+            echo "::warning::could not read the release list; skipping this check"
+            echo "status=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG="${LATEST%%$'\t'*}"
+          PUB="${LATEST##*$'\t'}"
+          AGE_D=$(( ( $(date -u +%s) - $(date -u -d "$PUB" +%s) ) / 86400 ))
+
+          # Report the pairing too: it is what tells a human whether the silence is fine.
+          PAIRED="$(gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern whisper-prebuilt-manifest.json --output - 2>/dev/null \
+            | jq -r 'first(.artifacts[]? | select(.install_kind == "slim") | .requires_llama_tag) // "none"' 2>/dev/null || echo "unreadable")"
+          LLAMA_NOW="$(gh api 'repos/unslothai/llama.cpp/releases?per_page=30' \
+            --jq '[.[] | select(.draft==false and .prerelease==false)]
+                  | max_by(.published_at|fromdateiso8601) | .tag_name' 2>/dev/null || echo "unknown")"
+          echo "newest ${TAG} (${AGE_D}d old), pairs with ${PAIRED}; newest llama is ${LLAMA_NOW}"
+
+          if [ "$AGE_D" -le "${STALE_DAYS}" ]; then
+            echo "status=success" >> "$GITHUB_OUTPUT"
+            echo "details=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "status=failure" >> "$GITHUB_OUTPUT"
+          {
+            echo 'details<<ALERT_EOF'
+            echo "No whisper prebuilt has been published in **${AGE_D} days** (threshold ${STALE_DAYS})."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| newest whisper release | \`${TAG}\`, published ${PUB} |"
+            echo "| it requires llama | \`${PAIRED}\` |"
+            echo "| newest llama release | \`${LLAMA_NOW}\` |"
+            echo
+            echo "If those two llama tags differ, Studio setup is reporting"
+            echo "\`no compatible prebuilt\` and falling back to Transformers dictation."
+            echo 'ALERT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Alert
+        if: ${{ steps.c.outputs.status != 'skip' }}
+        uses: ./.github/actions/prebuilt-alert
+        with:
+          status: ${{ steps.c.outputs.status }}
+          key: whisper-prebuilt-stale
+          title: 'No whisper.cpp prebuilt release published recently'
+          details: ${{ steps.c.outputs.details }}
+          token: ${{ github.token }}
