@@ -59,7 +59,9 @@ jobs:
           PUB="${LATEST##*$'\t'}"
           AGE_D=$(( ( $(date -u +%s) - $(date -u -d "$PUB" +%s) ) / 86400 ))
 
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+          # --clobber: without it gh refuses to overwrite and the failure is
+          # swallowed below, leaving a stale manifest to be read as current.
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
             --pattern whisper-prebuilt-manifest.json --output "${RUNNER_TEMP}/w.json" 2>/dev/null || true
           slim() { jq -r "first(.artifacts[]? | select(.install_kind == \"slim\") | .$1) // empty" \
                      "${RUNNER_TEMP}/w.json" 2>/dev/null || true; }
