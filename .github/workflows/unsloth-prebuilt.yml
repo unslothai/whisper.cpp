@@ -98,15 +98,28 @@ jobs:
     # arm64, and the same for assemble/alert below: these three only run git,
     # sed, tar, gh and python, so the architecture is irrelevant to them.
     #
-    # This is about queue tail, not contention. During the 08-06 run the org
-    # was running close to zero of its 60 concurrent jobs for the whole six
-    # hours these jobs sat queued, so nothing of ours was competing and the
-    # wait came from GitHub's shared public-repo pool. Over a 7-day,
-    # 2843-job sample the two labels have near-identical medians (0.9m for
-    # ubuntu-22.04, 1.8m for ubuntu-22.04-arm) and very different tails: p90
-    # 77.8m vs 18.7m, worst 229m vs 34m. resolve gates every build job, so
-    # the whole run pays its wait, and a gating job is priced at the tail
-    # rather than the median. It cost 83 minutes on 08-06.
+    # This is queue wait, not contention. During the 08-06 run the org was
+    # running close to zero of its 60 concurrent jobs for the whole six hours
+    # these jobs sat queued, so nothing of ours was competing and the wait
+    # came from GitHub's shared public-repo pool.
+    #
+    # Over 30 days and 1504 runner-occupying jobs in this repo and
+    # unslothai/llama.cpp, arm is better at every percentile, not just the
+    # tail:
+    #
+    #   label             n   med   p75   p90    p95     max   >30m
+    #   ubuntu-22.04    694  10.0  33.0  59.3  102.6   229.1  27.8%
+    #   ubuntu-22.04-arm 53   2.5   7.4  15.7   23.1    38.0   3.8%
+    #
+    # arm's worst wait in a month (38m) beats x64's p90 (59m), and x64 waits
+    # over half an hour more than a quarter of the time. Paired evidence from
+    # single runs agrees, where both labels are queued at the same instant:
+    # on 08-06 linux/arm64 got a runner in 34m while linux/x64 waited 2h54m.
+    # resolve gates every build job, so the whole run pays its wait, and it
+    # cost 83 minutes that night.
+    #
+    # Nothing here executes a built binary (the fingerprint check is a byte
+    # grep over unpacked archives), so no job depends on the host arch.
     runs-on: ubuntu-22.04-arm
     permissions:
       contents: read
