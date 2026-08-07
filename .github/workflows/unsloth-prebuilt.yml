@@ -95,7 +95,13 @@ concurrency:
 jobs:
   resolve:
     name: Resolve tag + stamp source
-    runs-on: ubuntu-22.04
+    # arm64, and the same for assemble/alert below: these three only run git,
+    # sed, tar, gh and python, so the architecture is irrelevant to them, and
+    # ubuntu-22.04 is the most contended label we use. On 08-06 the whole
+    # matrix was created at 19:12:29 and linux/arm64 got a runner in 34
+    # minutes while linux/x64 waited 2h54m. resolve gates every build job, so
+    # its queue wait is paid by the whole run: it cost 83 minutes that night.
+    runs-on: ubuntu-22.04-arm
     permissions:
       contents: read
     outputs:
@@ -361,7 +367,7 @@ jobs:
       && needs.resolve.result == 'success'
       && needs.build-slim.result == 'success'
       && (needs.resolve.outputs.exists != 'true' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22.04-arm
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -492,7 +498,7 @@ jobs:
     name: Report pipeline health
     needs: [resolve, build-slim, assemble]
     if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || inputs.publish) }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22.04-arm
     permissions:
       contents: read
       issues: write
