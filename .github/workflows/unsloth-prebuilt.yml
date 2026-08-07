@@ -96,11 +96,17 @@ jobs:
   resolve:
     name: Resolve tag + stamp source
     # arm64, and the same for assemble/alert below: these three only run git,
-    # sed, tar, gh and python, so the architecture is irrelevant to them, and
-    # ubuntu-22.04 is the most contended label we use. On 08-06 the whole
-    # matrix was created at 19:12:29 and linux/arm64 got a runner in 34
-    # minutes while linux/x64 waited 2h54m. resolve gates every build job, so
-    # its queue wait is paid by the whole run: it cost 83 minutes that night.
+    # sed, tar, gh and python, so the architecture is irrelevant to them.
+    #
+    # This is about queue tail, not contention. During the 08-06 run the org
+    # was running close to zero of its 60 concurrent jobs for the whole six
+    # hours these jobs sat queued, so nothing of ours was competing and the
+    # wait came from GitHub's shared public-repo pool. Over a 7-day,
+    # 2843-job sample the two labels have near-identical medians (0.9m for
+    # ubuntu-22.04, 1.8m for ubuntu-22.04-arm) and very different tails: p90
+    # 77.8m vs 18.7m, worst 229m vs 34m. resolve gates every build job, so
+    # the whole run pays its wait, and a gating job is priced at the tail
+    # rather than the median. It cost 83 minutes on 08-06.
     runs-on: ubuntu-22.04-arm
     permissions:
       contents: read
