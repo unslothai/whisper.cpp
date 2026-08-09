@@ -25,7 +25,9 @@ plus the OpenMP runtime the clang-built slices link it against, is linked into
 the bundle dir first -- exactly the wiring the Studio installer performs -- and
 then the same checks run. ggml's registry scans the executable's directory for
 backend modules, so links in the bin dir are the only wiring that registers both
-the CPU and accelerator backends.
+the CPU and accelerator backends. A fifth check then asserts that every library
+the loader took from the llama dir is published in the bundle's
+requires_ggml_sonames, so CI's wiring and the installer's cannot drift apart.
 
 Wiring only ever touches the EXTRACTED bundle, never the packaged archive, and
 skips names already present, so re-running is a no-op on an already wired dir.
@@ -49,6 +51,10 @@ import urllib.request
 from pathlib import Path
 
 _C_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
+
+# Metadata package_bundle.py embeds in every bundle; carries the slim pairing
+# contract (requires_ggml_sonames) the installer wires from.
+INFO_NAME = "UNSLOTH_WHISPER_PREBUILT_INFO.json"
 
 # Libraries the host provides at runtime, so an unresolved reference to them is
 # expected on a GPU-less build runner and is NOT a packaging defect: the NVIDIA
@@ -141,6 +147,53 @@ def check_help(server: Path, env: dict) -> None:
     if "usage" not in combined and "options" not in combined and "--model" not in combined:
         sys.exit(f"ERROR: whisper-server --help produced no usage text (rc={r.returncode}):\n{combined[:2000]}")
     print("OK: whisper-server --help")
+
+
+def check_wiring_contract(bundle: Path, server: Path, ggml_dir: Path,
+                          provided: set[str]) -> None:
+    """Every lib the loader pulls out of the paired llama bundle must be in
+    requires_ggml_sonames.
+
+    CI wires the bundle by globbing the llama dir, but the Studio installer wires
+    it from the manifest's requires_ggml_sonames list. If those two disagree the
+    build goes green while every install is broken -- which is exactly how
+    linux/arm64 shipped a whisper-server that died on a missing libomp.so.5.
+    Linux only: ldd is the only portable way to read the transitive NEEDED set
+    (macOS has its own @rpath gate in the workflow, Windows has no equivalent).
+    """
+    if platform.system() != "Linux":
+        print("SKIP: wiring-contract check (ldd is Linux-only)")
+        return
+    info_path = bundle / INFO_NAME
+    if not info_path.is_file():
+        print(f"SKIP: wiring-contract check ({INFO_NAME} not in bundle)")
+        return
+    info = json.loads(info_path.read_text())
+    declared = set(info.get("requires_ggml_sonames") or [])
+    if not declared:
+        print("SKIP: wiring-contract check (bundle declares no requires_ggml_sonames)")
+        return
+    r = subprocess.run(["ldd", str(server)], capture_output=True, text=True,
+                       env=_child_env(bundle))
+    # Left of "=>" is the soname the loader asked for, resolved or not. A soname
+    # the llama dir provides is by definition satisfied by the wiring, never by
+    # the host, so it belongs in the contract.
+    needed = {line.split("=>")[0].strip() for line in r.stdout.splitlines() if "=>" in line}
+    missing = sorted(needed & provided - declared)
+    if missing:
+        sys.exit(
+            "ERROR: whisper-server loads these libraries out of the paired llama "
+            f"bundle but the manifest does not require them: {', '.join(missing)}\n"
+            f"       declared requires_ggml_sonames: {', '.join(sorted(declared))}\n"
+            "       add them to the platform strategy's sonames in "
+            "package_bundle.py (or GGML_SONAMES for this job), or the installer "
+            "will wire an unloadable bundle.")
+    absent = sorted(declared - provided)
+    if absent:
+        print(f"WARNING: requires_ggml_sonames names {', '.join(absent)}, absent from "
+              f"{ggml_dir}; the installer's pairing check would reject this bundle",
+              file=sys.stderr)
+    print(f"OK: wiring contract ({len(needed & provided)} llama-provided libs, all declared)")
 
 
 def check_closure(bundle: Path, server: Path) -> None:
@@ -281,8 +334,9 @@ def main() -> int:
         if not p.exists():
             sys.exit(f"ERROR: not found: {p}")
 
+    provided: set[str] = set()
     if args.ggml_dir:
-        wire_ggml(args.bundle, args.ggml_dir)
+        provided = wire_ggml(args.bundle, args.ggml_dir)
 
     server = _server_path(args.bundle)
     if os.name != "nt":
@@ -291,6 +345,8 @@ def main() -> int:
 
     check_help(server, env)
     check_closure(args.bundle, server)
+    if args.ggml_dir:
+        check_wiring_contract(args.bundle, server, args.ggml_dir, provided)
     if args.cpu_only:
         # GPU-less runner: the only meaningful path is the CPU fallback that
         # Studio drives with --no-gpu. Real GPU inference is a separate job.

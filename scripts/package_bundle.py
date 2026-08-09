@@ -131,6 +131,17 @@ class PlatformStrategy:
     # on macOS, where the contract differs per arch: x64 has no metal dylib).
     whisper_lib_patterns = ("libwhisper.so*",)
     ggml_sonames = ("libggml.so.0", "libggml-base.so.0")
+    # The OpenMP runtime is part of the same contract wherever llama's slice is
+    # clang-built: its ggml-base links against the LLVM runtime and ships it
+    # INSIDE the bundle (never a system library), so the installer has to wire
+    # it in beside the ggml objects or whisper-server cannot load at all. Keyed
+    # by arch because the gcc-built (linux x64) and Apple clang (macOS) slices
+    # ship no libomp: they resolve libgomp from the host, or use no OpenMP.
+    openmp_sonames: dict[str, tuple[str, ...]] = {}
+
+    def sonames_for(self, arch: str) -> tuple[str, ...]:
+        """The full lib-in-same-dir contract for this os/arch."""
+        return tuple(self.ggml_sonames) + self.openmp_sonames.get(arch, ())
 
     def server_name(self) -> str:
         return "whisper-server" + self.exe_suffix
@@ -158,6 +169,10 @@ class PlatformStrategy:
 class LinuxStrategy(PlatformStrategy):
     name = "linux"
     rpath = "$ORIGIN"
+    # llama's arm64 slice is clang-built: libggml-base.so NEEDS libomp.so.5,
+    # shipped in the llama bundle. x64 is gcc-built and takes libgomp.so.1 from
+    # the host, exactly as llama's own binaries do.
+    openmp_sonames = {"arm64": ("libomp.so.5",)}
 
     def local_needed(self, path: Path, bin_dir: Path) -> list[str]:
         needed = re.findall(r"\(NEEDED\)[^\[]*\[([^\]]+)\]", _run(["readelf", "-d", str(path)]))
@@ -221,6 +236,11 @@ class WindowsStrategy(PlatformStrategy):
     rpath = ""  # Windows resolves DLLs from the executable's directory
     whisper_lib_patterns = ("whisper.dll",)
     ggml_sonames = ("ggml.dll", "ggml-base.dll")
+    # Both llama windows slices are clang-built and their ggml-base.dll imports
+    # the LLVM OpenMP DLL shipped next to it (verified in the PE import table of
+    # the x64 bundle too, so this is not an arm64-only quirk).
+    openmp_sonames = {"x64": ("libomp140.x86_64.dll",),
+                      "arm64": ("libomp140.aarch64.dll",)}
     LOCAL_DLL_PREFIXES = ("ggml", "whisper", "amdhip", "rocblas", "hipblas",
                           "rocsolver", "amd_comgr", "rocm", "hsa")
 
@@ -439,7 +459,8 @@ def write_metadata(stage: Path, strategy: PlatformStrategy, cfg: dict, asset: st
             "requires_ggml_tree": cfg.get("llama_ggml_tree") or None,
             "requires_ggml_commit": paired_ggml_commit(cfg["llama_tag"]),
             "requires_ggml_version": cfg["ggml_version"],
-            "requires_ggml_sonames": list(cfg.get("ggml_sonames") or strategy.ggml_sonames),
+            "requires_ggml_sonames": list(cfg.get("ggml_sonames")
+                                          or strategy.sonames_for(cfg["arch"])),
             "ggml_source": f"unslothai/llama.cpp@{cfg['llama_tag']}:/ggml",
         })
     (stage / INFO_NAME).write_text(json.dumps(info, indent=2))
