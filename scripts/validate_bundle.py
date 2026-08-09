@@ -20,11 +20,15 @@ otherwise the server is launched normally and CPU is fine. Real GPU inference is
 meant for a self-hosted accelerator runner (see the workflow / README).
 
 --ggml-dir <dir> validates a SLIM bundle (which ships no libggml*): every ggml
-object from that directory (an extracted paired unslothai/llama.cpp bundle) is
-linked into the bundle dir first -- exactly the wiring the Studio installer
-performs -- and then the same checks run. ggml's registry scans the executable's
-directory for backend modules, so links in the bin dir are the only wiring that
-registers both the CPU and accelerator backends.
+object from that directory (an extracted paired unslothai/llama.cpp bundle),
+plus the OpenMP runtime the clang-built slices link it against, is linked into
+the bundle dir first -- exactly the wiring the Studio installer performs -- and
+then the same checks run. ggml's registry scans the executable's directory for
+backend modules, so links in the bin dir are the only wiring that registers both
+the CPU and accelerator backends.
+
+Wiring only ever touches the EXTRACTED bundle, never the packaged archive, and
+skips names already present, so re-running is a no-op on an already wired dir.
 
 Exit 0 = valid; nonzero = do not ship this asset.
 """
@@ -59,21 +63,38 @@ _HOST_PROVIDED_LIB = re.compile(
 )
 
 
-def wire_ggml(bundle: Path, ggml_dir: Path) -> None:
+# The ggml objects themselves: the libraries whisper-server links against plus
+# the dlopen'd backend modules ggml's registry scans the bin dir for.
+_GGML_PATTERNS = ("libggml*.so", "libggml*.so.*", "libggml*.dylib", "ggml*.dll")
+
+# The OpenMP runtime rides along with them. It is NOT a libggml* name and NOT a
+# system library: llama's clang-built slices link ggml-base (and the CPU
+# variants) against the LLVM runtime and ship it inside the bundle, so it has to
+# land next to whisper-server too or the loader cannot bring ggml up at all:
+#   windows x64/arm64  ggml-base.dll imports libomp140.<arch>.dll
+#   linux-arm64        libggml-base.so NEEDS libomp.so.5 (clang 19, RUNPATH $ORIGIN)
+# Slices built with gcc (linux-x64, whose libgomp.so.1 comes from the host, as
+# it does for llama's own binaries) or Apple clang (macOS, no OpenMP) ship no
+# libomp at all, so the patterns simply do not match there.
+_OPENMP_PATTERNS = ("libomp*.so", "libomp*.so.*", "libomp*.dylib", "libomp*.dll")
+
+
+def wire_ggml(bundle: Path, ggml_dir: Path) -> set[str]:
     """Link every ggml object from --ggml-dir into the bundle dir (slim wiring).
 
     Symlink where the platform allows it, copy otherwise (Windows). Existing
     names in the bundle are left alone -- though a slim bundle ships none, by
-    packaging contract.
+    packaging contract -- so re-running over an already wired bundle is a no-op
+    and leaves byte-identical contents. Only the EXTRACTED copy is ever touched;
+    the packaged archive is never rewritten.
+
+    Returns the set of names this directory provides (whether linked now or
+    already present), i.e. the wiring contract the installer has to reproduce.
     """
     if not ggml_dir.is_dir():
         sys.exit(f"ERROR: --ggml-dir is not a directory: {ggml_dir}")
     names: set[str] = set()
-    # libomp*.dll rides along: llama's clang-built windows-arm64 ggml-base.dll
-    # imports libomp140.aarch64.dll (shipped in the llama bundle, never a
-    # system DLL), so the loader needs it next to the exe too. MSVC x64 uses
-    # vcomp140.dll from System32 instead, hence the pattern simply not matching.
-    for pat in ("libggml*.so", "libggml*.so.*", "libggml*.dylib", "ggml*.dll", "libomp*.dll"):
+    for pat in _GGML_PATTERNS + _OPENMP_PATTERNS:
         names.update(p.name for p in ggml_dir.glob(pat))
     if not any(n.startswith(("libggml", "ggml")) for n in names):
         sys.exit(f"ERROR: no ggml libraries (libggml* / ggml*.dll) in {ggml_dir}")
@@ -87,7 +108,9 @@ def wire_ggml(bundle: Path, ggml_dir: Path) -> None:
         except (OSError, NotImplementedError):
             shutil.copy2(src, dst, follow_symlinks=True)
         wired += 1
-    print(f"OK: wired {wired} ggml objects from {ggml_dir} into {bundle}")
+    print(f"OK: wired {wired} ggml objects from {ggml_dir} into {bundle} "
+          f"({len(names)} provided)")
+    return names
 
 
 def _server_path(bundle: Path) -> Path:
