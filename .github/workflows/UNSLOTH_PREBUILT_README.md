@@ -91,9 +91,14 @@ One slim bundle per os/arch, six in total:
 (NO `libggml*`): whisper is compiled against the ggml source tree of the paired
 `unslothai/llama.cpp` release (the `llama_tag` resolved above; the vendored
 `ggml/` dir is swapped before configuring), and at install time the Studio
-installer links every `libggml*` from that llama install's bin dir into the
-whisper bin dir, where the dynamic loader (and, for dlopen modules, ggml's
-registry) finds them. Because the llama install carries every ggml backend,
+installer links every `libggml*` **plus the OpenMP runtime that ships beside
+them** (`libomp*`) from that llama install's bin dir into the whisper bin dir,
+where the dynamic loader (and, for dlopen modules, ggml's registry) finds them.
+The OpenMP part is not optional on the clang-built slices: llama's linux-arm64
+`libggml-base.so` needs `libomp.so.5` and its Windows `ggml-base.dll` imports
+`libomp140.<arch>.dll`, neither of which is a system library, so a wiring that
+copies only `libggml*` produces a `whisper-server` that cannot load at all.
+Because the llama install carries every ggml backend,
 each slim bundle serves **every accelerator on its platform**: CUDA, HIP,
 Vulkan and the CPU variants on Linux/Windows, Metal and CPU on macOS.
 
@@ -126,7 +131,10 @@ CI validates each slim bundle on its free runner with the exact consumer
 wiring (`validate_bundle.py --ggml-dir`): Linux/Windows x64 against the
 same-tag llama `app-<llama_tag>-<os>-<arch>-cpu` bundle, macOS against the
 same-tag `llama-<llama_tag>-bin-macos-<arch>` bundle. GPU-side validation on
-other accelerators is skipped, as it was for fat GPU bundles.
+other accelerators is skipped, as it was for fat GPU bundles. On Linux the same
+step also asserts that every library the loader pulled out of the llama bundle
+is listed in `requires_ggml_sonames`, so CI's wiring (a glob) and the
+installer's (this list) cannot silently drift apart.
 
 ## Asset naming contract
 
@@ -185,11 +193,14 @@ Each release also carries:
 Every published entry is a slim entry: exactly one per os/arch with
 `backend: "slim"` (the consumer maps any accel, including cpu and metal, onto
 it; there are no per-accel slim entries). `requires_ggml_sonames` is
-per-platform: `["libggml.so.0", "libggml-base.so.0"]` on Linux, `["ggml.dll",
-"ggml-base.dll"]` on Windows, and on macOS the full dylib closure the loader
-needs (`libggml.0.dylib`, `libggml-base.0.dylib`, `libggml-cpu.0.dylib`,
-`libggml-blas.0.dylib`, `libggml-rpc.0.dylib`, plus `libggml-metal.0.dylib` on
-arm64). `min_os` follows the platform convention: `glibc-2.35`, `windows-10`,
+per-platform and per-arch: `["libggml.so.0", "libggml-base.so.0"]` on Linux
+x64 and the same plus `libomp.so.5` on Linux arm64, `["ggml.dll",
+"ggml-base.dll", "libomp140.<arch>.dll"]` on Windows, and on macOS the full
+dylib closure the loader needs (`libggml.0.dylib`, `libggml-base.0.dylib`,
+`libggml-cpu.0.dylib`, `libggml-blas.0.dylib`, `libggml-rpc.0.dylib`, plus
+`libggml-metal.0.dylib` on arm64; Apple clang builds no OpenMP, so no `libomp`
+entry there). The lists come from the platform strategies in
+`package_bundle.py`; `GGML_SONAMES` still overrides them, as the macOS jobs do. `min_os` follows the platform convention: `glibc-2.35`, `windows-10`,
 `macos-14.0` (arm64) / `macos-13.3` (x64). The manifest's top level records the
 pairing as `paired_llama_tag` and its ggml commit as `paired_ggml_commit`.
 `whisper-prebuilt-sha256.json`
