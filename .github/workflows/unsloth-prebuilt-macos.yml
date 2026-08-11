@@ -121,3 +121,4 @@ jobs:
           name: whisper-${{ inputs.tag }}-macos-${{ matrix.build }}-${{ matrix.accel }}
           path: dist/whisper-${{ inputs.tag }}-macos-${{ matrix.build }}-${{ matrix.accel }}.tar.gz
           if-no-files-found: error
+          retention-days: 7

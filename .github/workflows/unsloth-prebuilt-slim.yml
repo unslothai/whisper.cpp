@@ -183,6 +183,7 @@ jobs:
           name: whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-slim
           path: dist/whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-slim.tar.gz
           if-no-files-found: error
+          retention-days: 7
 
   build-windows:
     name: windows/${{ matrix.arch }}
@@ -363,6 +364,7 @@ jobs:
           name: whisper-${{ inputs.tag }}-windows-${{ matrix.arch }}-slim
           path: dist/whisper-${{ inputs.tag }}-windows-${{ matrix.arch }}-slim.zip
           if-no-files-found: error
+          retention-days: 7
 
   build-macos:
     # Mirrors the runner/toolchain of the fat macOS child (macos-26 arm64,
@@ -531,3 +533,4 @@ jobs:
           name: whisper-${{ inputs.tag }}-macos-${{ matrix.arch }}-slim
           path: dist/whisper-${{ inputs.tag }}-macos-${{ matrix.arch }}-slim.tar.gz
           if-no-files-found: error
+          retention-days: 7

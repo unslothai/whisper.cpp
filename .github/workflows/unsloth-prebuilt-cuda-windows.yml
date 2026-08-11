@@ -161,3 +161,4 @@ jobs:
           name: whisper-${{ inputs.tag }}-windows-x64-${{ matrix.profile }}
           path: dist/whisper-${{ inputs.tag }}-windows-x64-${{ matrix.profile }}.zip
           if-no-files-found: error
+          retention-days: 7

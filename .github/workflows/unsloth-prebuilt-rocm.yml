@@ -189,6 +189,7 @@ jobs:
           name: whisper-${{ inputs.tag }}-linux-x64-rocm-${{ matrix.gfx_target }}
           path: dist/whisper-${{ inputs.tag }}-linux-x64-rocm-${{ matrix.gfx_target }}.tar.gz
           if-no-files-found: error
+          retention-days: 7
 
   build-windows:
     name: windows/${{ matrix.gfx_target }}
@@ -340,3 +341,4 @@ jobs:
           name: whisper-${{ inputs.tag }}-windows-x64-rocm-${{ matrix.gfx_target }}
           path: dist/whisper-${{ inputs.tag }}-windows-x64-rocm-${{ matrix.gfx_target }}.zip
           if-no-files-found: error
+          retention-days: 7

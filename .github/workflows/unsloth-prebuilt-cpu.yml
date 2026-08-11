@@ -137,6 +137,7 @@ jobs:
           name: whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-cpu
           path: dist/whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-cpu.tar.gz
           if-no-files-found: error
+          retention-days: 7
 
   build-windows:
     name: windows/${{ matrix.arch }}
@@ -274,3 +275,4 @@ jobs:
           name: whisper-${{ inputs.tag }}-windows-${{ matrix.arch }}-cpu
           path: dist/whisper-${{ inputs.tag }}-windows-${{ matrix.arch }}-cpu.zip
           if-no-files-found: error
+          retention-days: 7
