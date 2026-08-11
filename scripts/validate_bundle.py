@@ -85,6 +85,92 @@ _GGML_PATTERNS = ("libggml*.so", "libggml*.so.*", "libggml*.dylib", "ggml*.dll")
 _OPENMP_PATTERNS = ("libomp*.so", "libomp*.so.*", "libomp*.dylib", "libomp*.dll")
 
 
+def _pe_imported_dlls(path: Path) -> list[str]:
+    """The DLL names in a PE file's import directory, or [] if it is not a PE.
+
+    A few dozen lines of struct parsing so the Windows wiring contract can be
+    checked with the standard library alone, on any host: the import table is
+    read out of the file, never by loading it, so a Linux runner can inspect a
+    Windows bundle. Layout per the PE format: DOS stub points at the NT headers,
+    the optional header's second data directory is the import table, and section
+    headers map each RVA back to a file offset.
+    """
+    try:
+        blob = path.read_bytes()
+        if blob[:2] != b"MZ":
+            return []
+        pe = int.from_bytes(blob[0x3C:0x40], "little")
+        if blob[pe:pe + 4] != b"PE\0\0":
+            return []
+        opt = pe + 24
+        magic = int.from_bytes(blob[opt:opt + 2], "little")
+        if magic not in (0x10B, 0x20B):  # PE32 / PE32+
+            return []
+        # The data directory sits after the optional header's fixed part, whose
+        # size differs between PE32 and PE32+; imports are directory entry 1.
+        imports = opt + (96 if magic == 0x10B else 112) + 8
+        table_rva = int.from_bytes(blob[imports:imports + 4], "little")
+        if not table_rva:
+            return []
+        n_sections = int.from_bytes(blob[pe + 6:pe + 8], "little")
+        opt_size = int.from_bytes(blob[pe + 20:pe + 22], "little")
+        sections = []
+        for i in range(n_sections):
+            s = opt + opt_size + i * 40
+            sections.append((
+                int.from_bytes(blob[s + 12:s + 16], "little"),  # VirtualAddress
+                int.from_bytes(blob[s + 8:s + 12], "little"),   # VirtualSize
+                int.from_bytes(blob[s + 20:s + 24], "little"),  # PointerToRawData
+            ))
+
+        def at(rva: int) -> int | None:
+            for va, size, raw in sections:
+                if va <= rva < va + max(size, 1):
+                    return raw + (rva - va)
+            return None
+
+        names, offset = [], at(table_rva)
+        if offset is None:
+            return []
+        while True:  # null descriptor terminates the table
+            entry = blob[offset:offset + 20]
+            if len(entry) < 20 or not any(entry):
+                break
+            name_at = at(int.from_bytes(entry[12:16], "little"))
+            if name_at is not None:
+                end = blob.index(b"\0", name_at)
+                names.append(blob[name_at:end].decode("ascii", "replace"))
+            offset += 20
+        return names
+    except (OSError, ValueError, IndexError):
+        return []
+
+
+def _pe_needed(server: Path, search: list[Path]) -> set[str]:
+    """Every DLL the loader reaches from ``server``, transitively.
+
+    ldd reports the whole NEEDED closure, so the Windows equivalent has to walk
+    it too: libomp is imported by ggml-base.dll, not by whisper-server.exe, and
+    a direct-imports-only check would miss exactly the dependency that made this
+    contract necessary. Only names resolvable in the bundle or the paired llama
+    dir are followed; system DLLs are left alone.
+    """
+    seen: set[str] = set()
+    queue = [server]
+    while queue:
+        current = queue.pop()
+        for name in _pe_imported_dlls(current):
+            if name.lower() in {s.lower() for s in seen}:
+                continue
+            seen.add(name)
+            for directory in search:
+                candidate = directory / name
+                if candidate.is_file():
+                    queue.append(candidate)
+                    break
+    return seen
+
+
 def wire_ggml(bundle: Path, ggml_dir: Path) -> set[str]:
     """Link every ggml object from --ggml-dir into the bundle dir (slim wiring).
 
@@ -158,10 +244,19 @@ def check_wiring_contract(bundle: Path, server: Path, ggml_dir: Path,
     it from the manifest's requires_ggml_sonames list. If those two disagree the
     build goes green while every install is broken -- which is exactly how
     linux/arm64 shipped a whisper-server that died on a missing libomp.so.5.
-    Linux only: ldd is the only portable way to read the transitive NEEDED set
-    (macOS has its own @rpath gate in the workflow, Windows has no equivalent).
+    Windows reads the PE import tables (stdlib, host-independent) and Linux uses
+    ldd; macOS has its own @rpath gate in the workflow and is skipped here.
+
+    The declared list is per (os, arch) while the real dependency is per paired
+    llama bundle, and one slim artifact serves every backend, so a name declared
+    here can be legitimately absent from a given pairing: the Windows GPU bundles
+    carry no libomp because their ggml does not import it. That asymmetry is the
+    installer's to resolve (unslothai/unsloth#8379); this gate only enforces the
+    direction that is always true, namely that nothing the loader actually takes
+    from the llama dir goes undeclared.
     """
-    if platform.system() != "Linux":
+    is_windows_bundle = server.suffix.lower() == ".exe"
+    if not is_windows_bundle and platform.system() != "Linux":
         print("SKIP: wiring-contract check (ldd is Linux-only)")
         return
     info_path = bundle / INFO_NAME
@@ -173,13 +268,24 @@ def check_wiring_contract(bundle: Path, server: Path, ggml_dir: Path,
     if not declared:
         print("SKIP: wiring-contract check (bundle declares no requires_ggml_sonames)")
         return
-    r = subprocess.run(["ldd", str(server)], capture_output=True, text=True,
-                       env=_child_env(bundle))
-    # Left of "=>" is the soname the loader asked for, resolved or not. A soname
-    # the llama dir provides is by definition satisfied by the wiring, never by
-    # the host, so it belongs in the contract.
-    needed = {line.split("=>")[0].strip() for line in r.stdout.splitlines() if "=>" in line}
-    missing = sorted(needed & provided - declared)
+    if is_windows_bundle:
+        needed = _pe_needed(server, [bundle, ggml_dir])
+    else:
+        r = subprocess.run(["ldd", str(server)], capture_output=True, text=True,
+                           env=_child_env(bundle))
+        # Left of "=>" is the soname the loader asked for, resolved or not. A
+        # soname the llama dir provides is by definition satisfied by the
+        # wiring, never by the host, so it belongs in the contract.
+        needed = {line.split("=>")[0].strip() for line in r.stdout.splitlines() if "=>" in line}
+    # DLL imports are case-insensitive, so compare on a folded key and report
+    # the name as the bundle spells it.
+    folded = {name.lower(): name for name in provided}
+    declared_folded = {name.lower() for name in declared}
+    missing = sorted(
+        folded[name.lower()]
+        for name in needed
+        if name.lower() in folded and name.lower() not in declared_folded
+    )
     if missing:
         sys.exit(
             "ERROR: whisper-server loads these libraries out of the paired llama "

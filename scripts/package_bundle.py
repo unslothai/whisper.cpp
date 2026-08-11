@@ -236,9 +236,14 @@ class WindowsStrategy(PlatformStrategy):
     rpath = ""  # Windows resolves DLLs from the executable's directory
     whisper_lib_patterns = ("whisper.dll",)
     ggml_sonames = ("ggml.dll", "ggml-base.dll")
-    # Both llama windows slices are clang-built and their ggml-base.dll imports
-    # the LLVM OpenMP DLL shipped next to it (verified in the PE import table of
-    # the x64 bundle too, so this is not an arm64-only quirk).
+    # Both llama windows CPU slices are clang-built and their ggml-base.dll
+    # imports the LLVM OpenMP DLL shipped next to it, on x64 as well as arm64.
+    # Keyed by arch, but the dependency is really per paired bundle: the GPU
+    # slices (rocm, vulkan, cuda) neither ship nor import libomp, and one slim
+    # artifact serves every backend, so a name here can be legitimately absent
+    # from a given pairing and the installer decides per pairing
+    # (unslothai/unsloth#8379). validate_bundle.py pairs against the CPU bundle,
+    # which is the pairing this list describes.
     openmp_sonames = {"x64": ("libomp140.x86_64.dll",),
                       "arm64": ("libomp140.aarch64.dll",)}
     LOCAL_DLL_PREFIXES = ("ggml", "whisper", "amdhip", "rocblas", "hipblas",
