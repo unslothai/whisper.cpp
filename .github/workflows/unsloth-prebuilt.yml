@@ -77,6 +77,11 @@ on:
         default: false
         required: false
         type: boolean
+      keep_artifacts:
+        description: 'Keep this run''s artifacts even if it publishes nothing (artifact-only test runs)'
+        default: false
+        required: false
+        type: boolean
 
 permissions:
   contents: write
@@ -527,12 +532,27 @@ jobs:
           rm -f dist/*.entry.json
           ls -la dist
 
+      # Only on a run that did NOT succeed, matching llama.cpp. Uploading this
+      # unconditionally duplicated every bundle in the run: on a green publish
+      # the same bytes are already release assets, and reclaim below cannot
+      # delete this copy because an aggregate matches no single asset name -- so
+      # it was the largest survivor of every cleanup. It also published
+      # unverified builds, since any signed-in user can download an artifact
+      # from a public repo, for runs that deliberately never released.
+      #
+      # !success() rather than failure(): a cancelled run is exactly when a
+      # human wants the rescue bundle.
       - name: Upload full release set (artifacts)
+        if: ${{ always() && !success() }}
         uses: actions/upload-artifact@v6
         with:
           name: unsloth-whisper-prebuilt-${{ needs.resolve.outputs.tag }}
           path: dist/*
-          if-no-files-found: error
+          # warn, not error: an early failure can leave dist/ absent, and a
+          # missing debug bundle must not turn a diagnosable failure into a
+          # confusing second one.
+          if-no-files-found: warn
+          overwrite: true
           retention-days: 7
 
       - name: Publish GitHub release (draft first, then atomic)
@@ -664,7 +684,7 @@ jobs:
         # artifacts this step deleted. That rerun fails loudly at assemble's
         # coverage gate rather than publishing a partial set, which is the
         # failure mode this pipeline already prefers.
-        if: ${{ needs.assemble.outputs.published != 'true' }}
+        if: ${{ needs.assemble.outputs.published != 'true' && inputs.keep_artifacts != true }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
