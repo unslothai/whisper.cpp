@@ -277,15 +277,21 @@ def check_wiring_contract(bundle: Path, server: Path, ggml_dir: Path,
         # soname the llama dir provides is by definition satisfied by the
         # wiring, never by the host, so it belongs in the contract.
         needed = {line.split("=>")[0].strip() for line in r.stdout.splitlines() if "=>" in line}
-    # DLL imports are case-insensitive, so compare on a folded key and report
-    # the name as the bundle spells it.
-    folded = {name.lower(): name for name in provided}
-    declared_folded = {name.lower() for name in declared}
-    missing = sorted(
-        folded[name.lower()]
-        for name in needed
-        if name.lower() in folded and name.lower() not in declared_folded
-    )
+    if is_windows_bundle:
+        # DLL imports are case-insensitive and an import table need not spell a
+        # name the way the file does, so fold for Windows only; POSIX sonames
+        # are case-sensitive and must keep comparing exactly.
+        by_key = {name.lower(): name for name in provided}
+        declared_keys = {name.lower() for name in declared}
+        missing = sorted(
+            by_key[name.lower()]
+            for name in needed
+            if name.lower() in by_key and name.lower() not in declared_keys
+        )
+        absent = sorted(name for name in declared if name.lower() not in by_key)
+    else:
+        missing = sorted(needed & provided - declared)
+        absent = sorted(declared - provided)
     if missing:
         sys.exit(
             "ERROR: whisper-server loads these libraries out of the paired llama "
@@ -294,12 +300,15 @@ def check_wiring_contract(bundle: Path, server: Path, ggml_dir: Path,
             "       add them to the platform strategy's sonames in "
             "package_bundle.py (or GGML_SONAMES for this job), or the installer "
             "will wire an unloadable bundle.")
-    absent = sorted(declared - provided)
     if absent:
         print(f"WARNING: requires_ggml_sonames names {', '.join(absent)}, absent from "
               f"{ggml_dir}; the installer's pairing check would reject this bundle",
               file=sys.stderr)
-    print(f"OK: wiring contract ({len(needed & provided)} llama-provided libs, all declared)")
+    if is_windows_bundle:
+        taken = {name for name in needed if name.lower() in {p.lower() for p in provided}}
+    else:
+        taken = needed & provided
+    print(f"OK: wiring contract ({len(taken)} llama-provided libs, all declared)")
 
 
 def check_closure(bundle: Path, server: Path) -> None:
