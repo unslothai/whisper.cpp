@@ -60,11 +60,11 @@ jobs:
           - { arch: arm64, runner: ubuntu-22.04-arm }
     steps:
       - name: Checkout build tooling (this repo)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
         with: { path: tooling, persist-credentials: false }
 
       - name: Download stamped source @ ${{ inputs.tag }}
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with: { name: "${{ inputs.source_artifact }}", path: srcpkg }
       - name: Extract source
         run: |
@@ -111,7 +111,7 @@ jobs:
           { echo "CC=clang-19"; echo "CXX=clang++-19"; } >> "$GITHUB_ENV"
 
       - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2.20
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639  # v1.2.20
         with: { key: "slim-linux-${{ matrix.arch }}", variant: ccache, evict-old-files: 14d }
 
       # Shared build, backend-DL, no accelerator toolkits: the single in-tree
@@ -178,7 +178,7 @@ jobs:
             --ggml-dir llama_cpu
 
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-slim
           path: dist/whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-slim.tar.gz
@@ -208,11 +208,11 @@ jobs:
       run: { shell: pwsh }
     steps:
       - name: Checkout build tooling (this repo)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
         with: { path: tooling, persist-credentials: false }
 
       - name: Download stamped source @ ${{ inputs.tag }}
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with: { name: "${{ inputs.source_artifact }}", path: srcpkg }
       - name: Extract source
         shell: bash
@@ -247,17 +247,17 @@ jobs:
       # x64-only and the native arm64 build is small enough to skip caching.
       - name: ccache
         if: matrix.arch == 'x64'
-        uses: hendrikmuhs/ccache-action@v1.2.20
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639  # v1.2.20
         with: { key: "slim-windows-${{ matrix.arch }}", variant: ccache, evict-old-files: 14d }
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with: { python-version: "3.11" }
 
       - name: Install Ninja
         run: choco install ninja --no-progress
 
       - name: Setup MSVC (${{ matrix.msvc_arch }})
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1.13.0
         with: { arch: "${{ matrix.msvc_arch }}" }
 
       # The windows-11-arm image ships a native LLVM; install one via choco
@@ -359,7 +359,7 @@ jobs:
             --ggml-dir llama_cpu
 
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: whisper-${{ inputs.tag }}-windows-${{ matrix.arch }}-slim
           path: dist/whisper-${{ inputs.tag }}-windows-${{ matrix.arch }}-slim.zip
@@ -396,11 +396,11 @@ jobs:
             ggml_sonames: "libggml.0.dylib,libggml-base.0.dylib,libggml-cpu.0.dylib,libggml-blas.0.dylib,libggml-rpc.0.dylib"
     steps:
       - name: Checkout build tooling (this repo)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
         with: { path: tooling, persist-credentials: false }
 
       - name: Download stamped source @ ${{ inputs.tag }}
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with: { name: "${{ inputs.source_artifact }}", path: srcpkg }
       - name: Extract source
         run: |
@@ -528,7 +528,7 @@ jobs:
             --ggml-dir llama_bin
 
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: whisper-${{ inputs.tag }}-macos-${{ matrix.arch }}-slim
           path: dist/whisper-${{ inputs.tag }}-macos-${{ matrix.arch }}-slim.tar.gz

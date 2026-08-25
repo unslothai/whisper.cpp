@@ -46,7 +46,7 @@ jobs:
         run: curl -fsSL https://raw.githubusercontent.com/kou/arrow/e49d8ae15583ceff03237571569099a6ad62be32/ci/scripts/util_free_space.sh | bash
 
       - name: Checkout build tooling (this repo)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
         with: { path: tooling, persist-credentials: false }
 
       - name: Install build dependencies
@@ -99,7 +99,7 @@ jobs:
           echo "/opt/rocm/bin:/opt/rocm/llvm/bin:$PATH" >> "$GITHUB_PATH"
 
       - name: Download stamped source @ ${{ inputs.tag }}
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with: { name: "${{ inputs.source_artifact }}", path: srcpkg }
       - name: Extract source
         run: |
@@ -184,7 +184,7 @@ jobs:
       # so there is nothing to validate here, matching unslothai/llama.cpp's ROCm
       # release job. Real GPU inference is a separate self-hosted job (see README).
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: whisper-${{ inputs.tag }}-linux-x64-rocm-${{ matrix.gfx_target }}
           path: dist/whisper-${{ inputs.tag }}-linux-x64-rocm-${{ matrix.gfx_target }}.tar.gz
@@ -200,7 +200,7 @@ jobs:
       fail-fast: false
     steps:
       - name: Checkout build tooling (this repo)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
         with: { path: tooling, persist-credentials: false }
 
       - name: Install Ninja + Perl
@@ -250,7 +250,7 @@ jobs:
           tar -xzf rocm.tar.gz -C C:\opt\rocm --strip-components=1
 
       - name: Download stamped source @ ${{ inputs.tag }}
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with: { name: "${{ inputs.source_artifact }}", path: srcpkg }
       - name: Extract source
         shell: bash
@@ -336,7 +336,7 @@ jobs:
       # GPU bundles are built and shipped un-run: the Windows ROCm runner has no
       # AMD GPU, so there is nothing to validate here, matching unslothai/llama.cpp.
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: whisper-${{ inputs.tag }}-windows-x64-rocm-${{ matrix.gfx_target }}
           path: dist/whisper-${{ inputs.tag }}-windows-x64-rocm-${{ matrix.gfx_target }}.zip

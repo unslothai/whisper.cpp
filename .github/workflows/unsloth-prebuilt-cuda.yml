@@ -40,7 +40,7 @@ jobs:
       matrix: ${{ fromJSON(inputs.matrix) }}
     steps:
       - name: Free disk space
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be  # v1.3.1
         with:
           tool-cache: true
           android: true
@@ -50,11 +50,11 @@ jobs:
           swap-storage: true
 
       - name: Checkout build tooling (this repo)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
         with: { path: tooling }
 
       - name: Download stamped source @ ${{ inputs.tag }}
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with: { name: "${{ inputs.source_artifact }}", path: srcpkg }
       - name: Extract source
         run: |
@@ -76,7 +76,7 @@ jobs:
           { echo "CC=gcc-14"; echo "CXX=g++-14"; echo "CUDAHOSTCXX=g++-14"; } >> "$GITHUB_ENV"
 
       - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2.20
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639  # v1.2.20
         with: { key: "cuda-${{ matrix.cuda }}-${{ matrix.arch }}-${{ matrix.profile }}", variant: ccache, evict-old-files: 14d }
 
       # Jimver has no CUDA 13.3 mapping, so pull that toolkit from the NVIDIA
@@ -105,7 +105,7 @@ jobs:
 
       - name: Install CUDA toolkit ${{ matrix.cuda }} (Jimver)
         if: matrix.cuda != '13.3'
-        uses: Jimver/cuda-toolkit@v0.2.35
+        uses: Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76  # v0.2.35
         id: cuda-toolkit
         with: { cuda: "${{ matrix.cuda }}", method: network }
 
@@ -168,7 +168,7 @@ jobs:
       # same as unslothai/llama.cpp's CUDA release job. Real GPU inference is a
       # separate self-hosted accelerator job (see README).
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-${{ matrix.profile }}
           path: dist/whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-${{ matrix.profile }}.tar.gz

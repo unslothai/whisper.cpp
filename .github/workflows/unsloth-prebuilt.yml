@@ -357,7 +357,7 @@ jobs:
 
       - name: Upload stamped source artifact
         if: ${{ steps.r.outputs.exists != 'true' || github.event_name == 'workflow_dispatch' }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: ${{ steps.r.outputs.source_artifact }}
           path: ${{ runner.temp }}/whisper.cpp-source-${{ steps.r.outputs.tag }}.tar.gz
@@ -400,13 +400,13 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout build tooling (this repo)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
         with:
           path: tooling
 
       - name: Download built bundles
         id: download
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         continue-on-error: true
         with:
           path: dist
@@ -415,7 +415,7 @@ jobs:
 
       - name: Download built bundles (retry)
         if: steps.download.outcome == 'failure'
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with:
           path: dist
           pattern: whisper-*
@@ -502,7 +502,7 @@ jobs:
       # human wants the rescue bundle.
       - name: Upload full release set (artifacts)
         if: ${{ always() && !success() }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: unsloth-whisper-prebuilt-${{ needs.resolve.outputs.tag }}
           path: dist/*
@@ -696,7 +696,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout (for the composite action)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
         with: { persist-credentials: false }
 
       - name: Summarise run

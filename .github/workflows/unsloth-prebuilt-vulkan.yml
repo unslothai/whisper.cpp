@@ -32,11 +32,11 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout build tooling (this repo)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
         with: { path: tooling, persist-credentials: false }
 
       - name: Download stamped source @ ${{ inputs.tag }}
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with: { name: "${{ inputs.source_artifact }}", path: srcpkg }
       - name: Extract source
         run: |
@@ -53,7 +53,7 @@ jobs:
           sudo apt-get install -y build-essential mesa-vulkan-drivers vulkan-sdk ninja-build
 
       - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2.20
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639  # v1.2.20
         with: { key: vulkan-linux-x64, variant: ccache, evict-old-files: 14d }
 
       - name: Configure + build (dynamic, backend-DL, CPU fallback)
@@ -98,7 +98,7 @@ jobs:
       # GPU bundles are built and shipped un-run: the Vulkan runner has no GPU,
       # so there is nothing to validate here, matching unslothai/llama.cpp.
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: whisper-${{ inputs.tag }}-linux-x64-vulkan
           path: dist/whisper-${{ inputs.tag }}-linux-x64-vulkan.tar.gz
@@ -112,11 +112,11 @@ jobs:
       run: { shell: pwsh }
     steps:
       - name: Checkout build tooling (this repo)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
         with: { path: tooling, persist-credentials: false }
 
       - name: Download stamped source @ ${{ inputs.tag }}
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with: { name: "${{ inputs.source_artifact }}", path: srcpkg }
       - name: Extract source
         shell: bash
@@ -126,14 +126,14 @@ jobs:
           tar -xzf "srcpkg/whisper.cpp-source-${{ inputs.tag }}.tar.gz" -C src --strip-components=1
 
       - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2.20
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639  # v1.2.20
         with: { key: vulkan-windows-x64, variant: ccache, evict-old-files: 14d }
 
       - name: Install Ninja
         run: choco install ninja --no-progress
 
       - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1.13.0
 
       - name: Install Vulkan SDK
         run: |
@@ -181,7 +181,7 @@ jobs:
       # GPU bundles are built and shipped un-run: the Windows Vulkan runner has
       # no GPU, so there is nothing to validate here, matching unslothai/llama.cpp.
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: whisper-${{ inputs.tag }}-windows-x64-vulkan
           path: dist/whisper-${{ inputs.tag }}-windows-x64-vulkan.zip
