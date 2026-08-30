@@ -176,16 +176,27 @@ jobs:
           # upstream tag is not shipped the instant it appears. GitHub does not
           # guarantee list order, so pick the max by published_at explicitly. An
           # explicit vX.Y.Z tag (manual dispatch) skips the filter.
+          # The vMAJOR.MINOR[.PATCH] shape is part of the SELECTION, not a check applied
+          # afterwards. Upstream also publishes build-number releases (b4938, b2365)
+          # alongside its semver ones, and those are not prereleases, so a selection that
+          # filtered only on draft/prerelease picked the newest of them and the check on
+          # the next line then refused it -- exit 1 before any build, on every scheduled
+          # run and on every llama-published dispatch. That is exactly what happened from
+          # 2026-08-20 (upstream b4938, six minutes before the v1.9.3 PRErelease, left
+          # b4938 as the newest non-prerelease) until this fix: ten days with no whisper
+          # release while llama.cpp published four, so every Studio install reported
+          # "no compatible prebuilt" and lost curated dictation.
           if [ "$UT" = "latest" ]; then
             CUTOFF="$(date -u -d "-${AGE_H} hours" +%s)"
             UT="$(gh api 'repos/ggml-org/whisper.cpp/releases?per_page=100' \
-              --jq "[.[] | select(.draft==false and .prerelease==false) | select((.published_at|fromdateiso8601) <= ${CUTOFF})] | max_by(.published_at|fromdateiso8601) | .tag_name")"
+              --jq "[.[] | select(.draft==false and .prerelease==false) | select(.tag_name|test(\"^v[0-9]+\\\\.[0-9]+(\\\\.[0-9]+)?$\")) | select((.published_at|fromdateiso8601) <= ${CUTOFF})] | max_by(.published_at|fromdateiso8601) | .tag_name")"
             if [ -z "$UT" ] || [ "$UT" = "null" ]; then
-              echo "refusing: no ggml-org/whisper.cpp release older than ${AGE_H}h in the last 100 releases" >&2
+              echo "refusing: no vMAJOR.MINOR[.PATCH] ggml-org/whisper.cpp release older than ${AGE_H}h in the last 100 releases" >&2
               exit 1
             fi
             echo "selected upstream ${UT} (aged >= ${AGE_H}h)"
           fi
+          # Now only reachable for an explicit workflow_dispatch tag, where refusing is right.
           printf '%s' "$UT" | grep -qE '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' \
             || { echo "refusing non-release upstream tag '$UT' (want vMAJOR.MINOR[.PATCH])" >&2; exit 1; }
 
