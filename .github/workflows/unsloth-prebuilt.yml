@@ -381,6 +381,10 @@ jobs:
       source_artifact: ${{ needs.resolve.outputs.source_artifact }}
       llama_tag: ${{ needs.resolve.outputs.llama_tag }}
       llama_ggml_tree: ${{ needs.resolve.outputs.llama_ggml_tree }}
+    # The Windows leg Authenticode-signs its binaries with Azure Trusted
+    # Signing. Declared optional in the child, so a fork without the secrets
+    # still builds.
+    secrets: inherit
 
   assemble:
     name: Assemble metadata + publish

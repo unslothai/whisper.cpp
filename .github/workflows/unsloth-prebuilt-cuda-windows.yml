@@ -22,6 +22,16 @@ on:
       source_artifact: { required: true,  type: string }
       matrix:         { required: true,  type: string }
 
+    secrets:
+      # Optional so a fork can still run the build; the composite action fails
+      # closed on unslothai itself, where an unsigned publish is the actual
+      # hazard. See .github/actions/sign-windows.
+      AZURE_CLIENT_ID:                     { required: false }
+      AZURE_CLIENT_SECRET:                 { required: false }
+      AZURE_TENANT_ID:                     { required: false }
+      AZURE_TRUSTED_SIGNING_ACCOUNT_NAME:  { required: false }
+      AZURE_CERTIFICATE_PROFILE_NAME:      { required: false }
+
 permissions:
   contents: read
 
@@ -32,6 +42,9 @@ jobs:
   build:
     name: x64/${{ matrix.profile }}
     runs-on: ${{ matrix.runner }}
+    # Gate on the environment, matching release-desktop.yml: the job that
+    # can read the signing credentials is named explicitly.
+    environment: release-signing
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.matrix) }}
@@ -133,6 +146,20 @@ jobs:
             -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache
           cmake --build build --config Release --target whisper-server -j 3
 
+      # Before packaging, so every DLL the bundle carries is signed and not
+      # just the server executable. Windows Smart App Control evaluates each
+      # binary as it loads: an unsigned dependent DLL is refused with status
+      # 0xc0e90002 and surfaces as a "Bad Image" dialog naming that DLL.
+      - name: Sign Windows binaries
+        uses: ./tooling/.github/actions/sign-windows
+        with:
+          path: src/build/bin
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-account: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          azure-certificate-profile: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+
       - name: Package bundle
         env:
           OS: windows
@@ -151,6 +178,22 @@ jobs:
           SOURCE_COMMIT: ${{ inputs.commit }}
           SOURCE_REPO: ${{ inputs.repo }}
         run: python tooling/scripts/package_bundle.py
+
+      # The gate, run on the finished zip rather than the build tree: packaging
+      # copies files in after signing, so the zip is the only thing that proves
+      # what ships.
+      - name: Verify every PE in the bundle is signed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $zips = @(Get-ChildItem dist -Filter *.zip -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.FullName })
+          if ($zips.Count -eq 0) {
+            Write-Host '::error::no bundle in dist/; packaging produced nothing to verify'
+            exit 1
+          }
+          & tooling/.github/scripts/assert-windows-bundle-signed.ps1 -Path $zips
+          exit $LASTEXITCODE
 
       # GPU bundles are built and shipped un-run: the Windows CUDA runner has no
       # GPU/driver, so there is nothing to validate here, matching
