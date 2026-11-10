@@ -87,14 +87,13 @@ jobs:
           set -eux
           LT='${{ inputs.llama_tag }}'
           mkdir -p llama_src
-          # unslothai/llama.cpp releases ship their exact source as an asset;
-          # fall back to a shallow tag clone if a release ever lacks it.
-          if curl -fsSL --retry 3 -o llama-src.tar.gz \
-               "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"; then
-            tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
-          else
-            git clone --depth 1 --branch "$LT" https://github.com/unslothai/llama.cpp llama_src
-          fi
+          # unslothai/llama.cpp releases ship their exact source as an asset.
+          # No fallback to cloning the tag: a release tag points at the fork's
+          # master, not at the merged source the release was built from, so a
+          # clone can carry a different ggml than the bundles being paired.
+          curl -fsSL --retry 3 -o llama-src.tar.gz \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"
+          tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
           [ -f llama_src/ggml/CMakeLists.txt ] || { echo "llama source has no ggml/ tree" >&2; exit 1; }
           rm -rf src/ggml
           cp -a llama_src/ggml src/ggml
@@ -248,12 +247,10 @@ jobs:
           set -eux
           LT='${{ inputs.llama_tag }}'
           mkdir -p llama_src
-          if curl -fsSL --retry 3 -o llama-src.tar.gz \
-               "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"; then
-            tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
-          else
-            git clone --depth 1 --branch "$LT" https://github.com/unslothai/llama.cpp llama_src
-          fi
+          # The release's own source asset only; see the Linux job.
+          curl -fsSL --retry 3 -o llama-src.tar.gz \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"
+          tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
           [ -f llama_src/ggml/CMakeLists.txt ] || { echo "llama source has no ggml/ tree" >&2; exit 1; }
           rm -rf src/ggml
           cp -a llama_src/ggml src/ggml
@@ -474,12 +471,10 @@ jobs:
           set -eux
           LT='${{ inputs.llama_tag }}'
           mkdir -p llama_src
-          if curl -fsSL --retry 3 -o llama-src.tar.gz \
-               "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"; then
-            tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
-          else
-            git clone --depth 1 --branch "$LT" https://github.com/unslothai/llama.cpp llama_src
-          fi
+          # The release's own source asset only; see the Linux job.
+          curl -fsSL --retry 3 -o llama-src.tar.gz \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"
+          tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
           [ -f llama_src/ggml/CMakeLists.txt ] || { echo "llama source has no ggml/ tree" >&2; exit 1; }
           rm -rf src/ggml
           cp -a llama_src/ggml src/ggml
