@@ -77,7 +77,8 @@ _GGML_PATTERNS = ("libggml*.so", "libggml*.so.*", "libggml*.dylib", "ggml*.dll")
 # system library: llama's clang-built slices link ggml-base (and the CPU
 # variants) against the LLVM runtime and ship it inside the bundle, so it has to
 # land next to whisper-server too or the loader cannot bring ggml up at all:
-#   windows x64/arm64  ggml-base.dll imports libomp140.<arch>.dll
+#   windows x64/arm64  ggml-base.dll imports libomp140.<arch>.dll (Visual Studio's
+#                      copy) or libomp.dll (LLVM's), depending on the llama release
 #   linux-arm64        libggml-base.so NEEDS libomp.so.5 (clang 19, RUNPATH $ORIGIN)
 # Slices built with gcc (linux-x64, whose libgomp.so.1 comes from the host, as
 # it does for llama's own binaries) or Apple clang (macOS, no OpenMP) ship no

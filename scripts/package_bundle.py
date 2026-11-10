@@ -134,14 +134,14 @@ class PlatformStrategy:
     # The OpenMP runtime is part of the same contract wherever llama's slice is
     # clang-built: its ggml-base links against the LLVM runtime and ships it
     # INSIDE the bundle (never a system library), so the installer has to wire
-    # it in beside the ggml objects or whisper-server cannot load at all. Keyed
-    # by arch because the gcc-built (linux x64) and Apple clang (macOS) slices
-    # ship no libomp: they resolve libgomp from the host, or use no OpenMP.
-    openmp_sonames: dict[str, tuple[str, ...]] = {}
+    # it in beside the ggml objects or whisper-server cannot load at all. Its
+    # file name is llama's choice and has changed (libomp140.<arch>.dll from
+    # Visual Studio, libomp.dll from LLVM), so it is read from the paired llama
+    # cpu bundle at package time.
 
-    def sonames_for(self, arch: str) -> tuple[str, ...]:
-        """The full lib-in-same-dir contract for this os/arch."""
-        return tuple(self.ggml_sonames) + self.openmp_sonames.get(arch, ())
+    def openmp_sonames(self, llama_cpu_dir: Path) -> list[str]:
+        """OpenMP runtime files the paired llama cpu bundle's ggml-base loads from its own dir."""
+        return []
 
     def server_name(self) -> str:
         return "whisper-server" + self.exe_suffix
@@ -169,14 +169,19 @@ class PlatformStrategy:
 class LinuxStrategy(PlatformStrategy):
     name = "linux"
     rpath = "$ORIGIN"
-    # llama's arm64 slice is clang-built: libggml-base.so NEEDS libomp.so.5,
-    # shipped in the llama bundle. x64 is gcc-built and takes libgomp.so.1 from
-    # the host, exactly as llama's own binaries do.
-    openmp_sonames = {"arm64": ("libomp.so.5",)}
-
     def local_needed(self, path: Path, bin_dir: Path) -> list[str]:
         needed = re.findall(r"\(NEEDED\)[^\[]*\[([^\]]+)\]", _run(["readelf", "-d", str(path)]))
         return [n for n in needed if (bin_dir / n).exists() or (bin_dir / n).is_symlink()]
+
+    def openmp_sonames(self, llama_cpu_dir: Path) -> list[str]:
+        # llama's arm64 slice is clang-built: libggml-base.so NEEDS libomp.so.5,
+        # shipped in the llama bundle. x64 is gcc-built and takes libgomp.so.1
+        # from the host, exactly as llama's own binaries do.
+        base = llama_cpu_dir / "libggml-base.so"
+        if not base.exists():
+            sys.exit(f"ERROR: no libggml-base.so in the paired llama cpu bundle {llama_cpu_dir}")
+        return [n for n in self.local_needed(base.resolve(), llama_cpu_dir)
+                if n.startswith("libomp")]
 
     def backend_patterns(self) -> list[str]:
         return ["libwhisper.so*", "libggml*.so*",
@@ -236,16 +241,6 @@ class WindowsStrategy(PlatformStrategy):
     rpath = ""  # Windows resolves DLLs from the executable's directory
     whisper_lib_patterns = ("whisper.dll",)
     ggml_sonames = ("ggml.dll", "ggml-base.dll")
-    # Both llama windows CPU slices are clang-built and their ggml-base.dll
-    # imports the LLVM OpenMP DLL shipped next to it, on x64 as well as arm64.
-    # Keyed by arch, but the dependency is really per paired bundle: the GPU
-    # slices (rocm, vulkan, cuda) neither ship nor import libomp, and one slim
-    # artifact serves every backend, so a name here can be legitimately absent
-    # from a given pairing and the installer decides per pairing
-    # (unslothai/unsloth#8379). validate_bundle.py pairs against the CPU bundle,
-    # which is the pairing this list describes.
-    openmp_sonames = {"x64": ("libomp140.x86_64.dll",),
-                      "arm64": ("libomp140.aarch64.dll",)}
     LOCAL_DLL_PREFIXES = ("ggml", "whisper", "amdhip", "rocblas", "hipblas",
                           "rocsolver", "amd_comgr", "rocm", "hsa")
 
@@ -259,6 +254,23 @@ class WindowsStrategy(PlatformStrategy):
 
     def backend_patterns(self) -> list[str]:
         return ["whisper.dll", "ggml*.dll"]
+
+    def openmp_sonames(self, llama_cpu_dir: Path) -> list[str]:
+        # Both llama windows CPU slices are clang-built and their ggml-base.dll
+        # imports the LLVM OpenMP DLL shipped next to it, on x64 as well as
+        # arm64. The dependency is really per paired bundle: the GPU slices
+        # (rocm, vulkan, cuda) neither ship nor import libomp, and one slim
+        # artifact serves every backend, so a name here can be legitimately
+        # absent from a given pairing and the installer decides per pairing
+        # (unslothai/unsloth#8379). validate_bundle.py pairs against the CPU
+        # bundle, which is the pairing this list describes.
+        from validate_bundle import _pe_imported_dlls
+        base = llama_cpu_dir / "ggml-base.dll"
+        if not base.is_file():
+            sys.exit(f"ERROR: no ggml-base.dll in the paired llama cpu bundle {llama_cpu_dir}")
+        shipped = {p.name.lower(): p.name for p in llama_cpu_dir.glob("*.dll")}
+        return [shipped[n.lower()] for n in _pe_imported_dlls(base)
+                if n.lower().startswith("libomp") and n.lower() in shipped]
 
     def supports_symlinks(self) -> bool:
         return False
@@ -464,8 +476,7 @@ def write_metadata(stage: Path, strategy: PlatformStrategy, cfg: dict, asset: st
             "requires_ggml_tree": cfg.get("llama_ggml_tree") or None,
             "requires_ggml_commit": paired_ggml_commit(cfg["llama_tag"]),
             "requires_ggml_version": cfg["ggml_version"],
-            "requires_ggml_sonames": list(cfg.get("ggml_sonames")
-                                          or strategy.sonames_for(cfg["arch"])),
+            "requires_ggml_sonames": list(cfg["ggml_sonames"]),
             "ggml_source": f"unslothai/llama.cpp@{cfg['llama_tag']}:/ggml",
         })
     (stage / INFO_NAME).write_text(json.dumps(info, indent=2))
@@ -572,6 +583,9 @@ def do_package(args: argparse.Namespace) -> int:
         # (comma/space-separated). The macOS slim jobs use it per arch.
         "ggml_sonames": [s for s in re.split(r"[ ,;]+", args.ggml_sonames
                                              or env("GGML_SONAMES") or "") if s],
+        # The unpacked cpu bundle of the paired llama release (linux / windows
+        # slim jobs): the OpenMP part of requires_ggml_sonames is read from it.
+        "llama_cpu_dir": args.llama_cpu_dir or env("LLAMA_CPU_DIR") or "",
     }
     missing = [k for k in ("bin_dir", "src_dir", "out_dir", "tag", "upstream_tag",
                            "commit", "accel", "backend") if not cfg[k]]
@@ -587,6 +601,15 @@ def do_package(args: argparse.Namespace) -> int:
     strategy = STRATEGIES.get(cfg["os"])
     if strategy is None:
         sys.exit(f"ERROR: unknown OS '{cfg['os']}' (have {sorted(STRATEGIES)})")
+    if cfg["slim"] and not cfg["ggml_sonames"]:
+        if not cfg["llama_cpu_dir"]:
+            sys.exit("ERROR: SLIM mode needs GGML_SONAMES, or LLAMA_CPU_DIR (--llama-cpu-dir) "
+                     "pointing at the unpacked cpu bundle of the paired llama release")
+        llama_cpu_dir = Path(cfg["llama_cpu_dir"])
+        if not llama_cpu_dir.is_dir():
+            sys.exit(f"ERROR: LLAMA_CPU_DIR is not a directory: {llama_cpu_dir}")
+        cfg["ggml_sonames"] = list(strategy.ggml_sonames) + strategy.openmp_sonames(llama_cpu_dir)
+        print(f"requires_ggml_sonames from {llama_cpu_dir}: {', '.join(cfg['ggml_sonames'])}")
 
     bin_dir = Path(cfg["bin_dir"])
     out_dir = Path(cfg["out_dir"])
@@ -744,6 +767,8 @@ def main() -> int:
     ap.add_argument("--ggml-version", help="ggml version compiled against (major.minor.patch)")
     ap.add_argument("--ggml-sonames", help="override requires_ggml_sonames "
                     "(comma/space-separated library filenames)")
+    ap.add_argument("--llama-cpu-dir", help="unpacked cpu bundle of the paired llama release; "
+                    "the OpenMP runtime in requires_ggml_sonames is read from it")
     args = ap.parse_args()
 
     if args.emit_manifest or args.emit_sha256:

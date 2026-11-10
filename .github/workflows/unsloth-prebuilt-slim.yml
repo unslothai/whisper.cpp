@@ -150,11 +150,23 @@ jobs:
           cmake --build build --config Release --target whisper-server -j "$(nproc)"
           strip build/bin/whisper-server build/bin/libwhisper.so.* || true
 
+      # Packaging reads the OpenMP runtime name out of this bundle's ggml-base
+      # (requires_ggml_sonames), and validation wires the bundle against it.
+      - name: Fetch the paired llama cpu bundle
+        run: |
+          set -eux
+          mkdir -p llama_cpu
+          LT='${{ inputs.llama_tag }}'
+          curl -fsSL --retry 3 -o llama-cpu.tar.gz \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/app-${LT}-linux-${{ matrix.arch }}-cpu.tar.gz"
+          tar -xzf llama-cpu.tar.gz -C llama_cpu
+
       - name: Package slim bundle
         env:
           SLIM: "1"
           LLAMA_TAG: ${{ inputs.llama_tag }}
           LLAMA_GGML_TREE: ${{ inputs.llama_ggml_tree }}
+          LLAMA_CPU_DIR: ${{ github.workspace }}/llama_cpu
           OS: linux
           ARCH: ${{ matrix.arch }}
           ACCEL: slim
@@ -176,12 +188,8 @@ jobs:
       - name: Validate slim bundle against the paired llama cpu bundle
         run: |
           set -eux
-          mkdir -p bundle model llama_cpu
+          mkdir -p bundle model
           tar -xzf "dist/whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-slim.tar.gz" -C bundle
-          LT='${{ inputs.llama_tag }}'
-          curl -fsSL --retry 3 -o llama-cpu.tar.gz \
-            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/app-${LT}-linux-${{ matrix.arch }}-cpu.tar.gz"
-          tar -xzf llama-cpu.tar.gz -C llama_cpu
           curl -fsSL "$WHISPER_MODEL_URL" -o model/ggml-tiny.en.bin
           python3 tooling/scripts/validate_bundle.py \
             --bundle bundle --model model/ggml-tiny.en.bin --audio src/samples/jfk.wav \
@@ -345,11 +353,25 @@ jobs:
           azure-account: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
           azure-certificate-profile: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
 
+      # Packaging reads the OpenMP runtime name out of this bundle's ggml-base
+      # (requires_ggml_sonames), and validation wires the bundle against it.
+      - name: Fetch the paired llama cpu bundle
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p llama_cpu
+          LT='${{ inputs.llama_tag }}'
+          curl -fsSL --retry 3 -o llama-cpu.zip \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/app-${LT}-windows-${{ matrix.arch }}-cpu.zip"
+          # python -m zipfile instead of 7z: present on both x64 and arm runners.
+          python -m zipfile -e llama-cpu.zip llama_cpu
+
       - name: Package slim bundle
         env:
           SLIM: "1"
           LLAMA_TAG: ${{ inputs.llama_tag }}
           LLAMA_GGML_TREE: ${{ inputs.llama_ggml_tree }}
+          LLAMA_CPU_DIR: ${{ github.workspace }}/llama_cpu
           OS: windows
           ARCH: ${{ matrix.arch }}
           ACCEL: slim
@@ -389,13 +411,9 @@ jobs:
         shell: bash
         run: |
           set -eux
-          mkdir -p bundle model llama_cpu
+          mkdir -p bundle model
           # python -m zipfile instead of 7z: present on both x64 and arm runners.
           python -m zipfile -e "dist/whisper-${{ inputs.tag }}-windows-${{ matrix.arch }}-slim.zip" bundle
-          LT='${{ inputs.llama_tag }}'
-          curl -fsSL --retry 3 -o llama-cpu.zip \
-            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/app-${LT}-windows-${{ matrix.arch }}-cpu.zip"
-          python -m zipfile -e llama-cpu.zip llama_cpu
           curl -fsSL "$WHISPER_MODEL_URL" -o model/ggml-tiny.en.bin
           python tooling/scripts/validate_bundle.py \
             --bundle bundle --model model/ggml-tiny.en.bin --audio src/samples/jfk.wav \
