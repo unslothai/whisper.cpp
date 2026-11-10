@@ -127,6 +127,8 @@ that keeps the same ggml still backs the bundle. `requires_ggml_sonames` is the 
 of library filenames that must exist in the paired llama bin dir for the loader
 to bring the bundle up in a lib-in-same-dir layout (on macOS this includes the
 backend dylibs that llama's `libggml.0.dylib` itself loads via `@rpath`).
+A scheduled run republishes under the next packaging ordinal when the newest llama
+release has a different ggml tree, or when it no longer ships one of these filenames.
 
 CI validates each slim bundle on its free runner with the exact consumer
 wiring (`validate_bundle.py --ggml-dir`): Linux/Windows x64 against the
