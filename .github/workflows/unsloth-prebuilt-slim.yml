@@ -445,7 +445,9 @@ jobs:
           - arch: arm64
             runner: macos-26
             expect_arch: arm64
-            deploy_target: "14.0"
+            # Same floor as the paired llama arm64 bundle; a higher one makes the
+            # installer reject whisper on a macOS that llama itself runs on.
+            deploy_target: "13.3"
             ggml_sonames: "libggml.0.dylib,libggml-base.0.dylib,libggml-cpu.0.dylib,libggml-blas.0.dylib,libggml-metal.0.dylib,libggml-rpc.0.dylib"
           - arch: x64
             runner: macos-15-intel

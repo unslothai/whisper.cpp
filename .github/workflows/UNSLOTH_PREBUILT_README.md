@@ -109,8 +109,8 @@ exists only to link the build and is discarded at packaging). The rpath is
 `$ORIGIN` on Linux and `@loader_path` on macOS (Windows resolves DLLs from the
 executable's directory), so the linked-in llama libraries resolve from the
 bundle dir itself. macOS builds pin `-DGGML_METAL=OFF -DWHISPER_COREML=OFF`
-plus the same deployment targets as the previous fat macOS jobs (arm64 `14.0`,
-x64 `13.3`).
+plus the deployment target of the paired llama macOS bundles (`13.3` on arm64
+and x64).
 
 `whisper-<tag>-windows-arm64-slim.zip` is cross-compiled on the x64 runner with
 clang (`cmake/arm64-windows-llvm.cmake`). It cannot be run/validated on the x64
@@ -204,7 +204,7 @@ entry there). The ggml names come from the platform strategies in
 `package_bundle.py`. The OpenMP names are read at package time from the paired
 llama cpu bundle (`LLAMA_CPU_DIR`): whatever its ggml-base loads from its own
 directory. `GGML_SONAMES` still overrides the whole list, as the macOS jobs do. `min_os` follows the platform convention: `glibc-2.35`, `windows-10`,
-`macos-14.0` (arm64) / `macos-13.3` (x64). The manifest's top level records the
+`macos-13.3` (arm64 and x64, the floor of the paired llama bundles). The manifest's top level records the
 pairing as `paired_llama_tag` and its ggml commit as `paired_ggml_commit`.
 `whisper-prebuilt-sha256.json`
 is a flat `name -> {kind, repo, sha256, source_commit, upstream_tag}` index
