@@ -140,6 +140,7 @@ jobs:
             -DWHISPER_BUILD_EXAMPLES=ON \
             -DWHISPER_BUILD_SERVER=ON \
             -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_IS_DEV=OFF \
             -DWHISPER_SDL2=OFF \
             -DCMAKE_INSTALL_RPATH='$ORIGIN' \
             -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
@@ -304,6 +305,7 @@ jobs:
             -DWHISPER_BUILD_EXAMPLES=ON `
             -DWHISPER_BUILD_SERVER=ON `
             -DWHISPER_BUILD_TESTS=OFF `
+            -DWHISPER_BUILD_IS_DEV=OFF `
             -DWHISPER_SDL2=OFF `
             -DCMAKE_C_COMPILER_LAUNCHER=ccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -331,6 +333,7 @@ jobs:
             -DWHISPER_BUILD_EXAMPLES=ON ^
             -DWHISPER_BUILD_SERVER=ON ^
             -DWHISPER_BUILD_TESTS=OFF ^
+            -DWHISPER_BUILD_IS_DEV=OFF ^
             -DWHISPER_SDL2=OFF
           if errorlevel 1 exit /b 1
           cmake --build build --config Release --target whisper-server -j 3
@@ -502,6 +505,7 @@ jobs:
             -DWHISPER_BUILD_EXAMPLES=ON \
             -DWHISPER_BUILD_SERVER=ON \
             -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_IS_DEV=OFF \
             -DWHISPER_SDL2=OFF \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.deploy_target }} \
             -DCMAKE_INSTALL_RPATH='@loader_path' \
