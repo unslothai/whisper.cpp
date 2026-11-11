@@ -87,14 +87,13 @@ jobs:
           set -eux
           LT='${{ inputs.llama_tag }}'
           mkdir -p llama_src
-          # unslothai/llama.cpp releases ship their exact source as an asset;
-          # fall back to a shallow tag clone if a release ever lacks it.
-          if curl -fsSL --retry 3 -o llama-src.tar.gz \
-               "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"; then
-            tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
-          else
-            git clone --depth 1 --branch "$LT" https://github.com/unslothai/llama.cpp llama_src
-          fi
+          # unslothai/llama.cpp releases ship their exact source as an asset.
+          # No fallback to cloning the tag: a release tag points at the fork's
+          # master, not at the merged source the release was built from, so a
+          # clone can carry a different ggml than the bundles being paired.
+          curl -fsSL --retry 3 -o llama-src.tar.gz \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"
+          tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
           [ -f llama_src/ggml/CMakeLists.txt ] || { echo "llama source has no ggml/ tree" >&2; exit 1; }
           rm -rf src/ggml
           cp -a llama_src/ggml src/ggml
@@ -141,6 +140,7 @@ jobs:
             -DWHISPER_BUILD_EXAMPLES=ON \
             -DWHISPER_BUILD_SERVER=ON \
             -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_IS_DEV=OFF \
             -DWHISPER_SDL2=OFF \
             -DCMAKE_INSTALL_RPATH='$ORIGIN' \
             -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
@@ -150,11 +150,23 @@ jobs:
           cmake --build build --config Release --target whisper-server -j "$(nproc)"
           strip build/bin/whisper-server build/bin/libwhisper.so.* || true
 
+      # Packaging reads the OpenMP runtime name out of this bundle's ggml-base
+      # (requires_ggml_sonames), and validation wires the bundle against it.
+      - name: Fetch the paired llama cpu bundle
+        run: |
+          set -eux
+          mkdir -p llama_cpu
+          LT='${{ inputs.llama_tag }}'
+          curl -fsSL --retry 3 -o llama-cpu.tar.gz \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/app-${LT}-linux-${{ matrix.arch }}-cpu.tar.gz"
+          tar -xzf llama-cpu.tar.gz -C llama_cpu
+
       - name: Package slim bundle
         env:
           SLIM: "1"
           LLAMA_TAG: ${{ inputs.llama_tag }}
           LLAMA_GGML_TREE: ${{ inputs.llama_ggml_tree }}
+          LLAMA_CPU_DIR: ${{ github.workspace }}/llama_cpu
           OS: linux
           ARCH: ${{ matrix.arch }}
           ACCEL: slim
@@ -176,12 +188,8 @@ jobs:
       - name: Validate slim bundle against the paired llama cpu bundle
         run: |
           set -eux
-          mkdir -p bundle model llama_cpu
+          mkdir -p bundle model
           tar -xzf "dist/whisper-${{ inputs.tag }}-linux-${{ matrix.arch }}-slim.tar.gz" -C bundle
-          LT='${{ inputs.llama_tag }}'
-          curl -fsSL --retry 3 -o llama-cpu.tar.gz \
-            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/app-${LT}-linux-${{ matrix.arch }}-cpu.tar.gz"
-          tar -xzf llama-cpu.tar.gz -C llama_cpu
           curl -fsSL "$WHISPER_MODEL_URL" -o model/ggml-tiny.en.bin
           python3 tooling/scripts/validate_bundle.py \
             --bundle bundle --model model/ggml-tiny.en.bin --audio src/samples/jfk.wav \
@@ -240,12 +248,10 @@ jobs:
           set -eux
           LT='${{ inputs.llama_tag }}'
           mkdir -p llama_src
-          if curl -fsSL --retry 3 -o llama-src.tar.gz \
-               "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"; then
-            tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
-          else
-            git clone --depth 1 --branch "$LT" https://github.com/unslothai/llama.cpp llama_src
-          fi
+          # The release's own source asset only; see the Linux job.
+          curl -fsSL --retry 3 -o llama-src.tar.gz \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"
+          tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
           [ -f llama_src/ggml/CMakeLists.txt ] || { echo "llama source has no ggml/ tree" >&2; exit 1; }
           rm -rf src/ggml
           cp -a llama_src/ggml src/ggml
@@ -299,6 +305,7 @@ jobs:
             -DWHISPER_BUILD_EXAMPLES=ON `
             -DWHISPER_BUILD_SERVER=ON `
             -DWHISPER_BUILD_TESTS=OFF `
+            -DWHISPER_BUILD_IS_DEV=OFF `
             -DWHISPER_SDL2=OFF `
             -DCMAKE_C_COMPILER_LAUNCHER=ccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -326,6 +333,7 @@ jobs:
             -DWHISPER_BUILD_EXAMPLES=ON ^
             -DWHISPER_BUILD_SERVER=ON ^
             -DWHISPER_BUILD_TESTS=OFF ^
+            -DWHISPER_BUILD_IS_DEV=OFF ^
             -DWHISPER_SDL2=OFF
           if errorlevel 1 exit /b 1
           cmake --build build --config Release --target whisper-server -j 3
@@ -345,11 +353,25 @@ jobs:
           azure-account: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
           azure-certificate-profile: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
 
+      # Packaging reads the OpenMP runtime name out of this bundle's ggml-base
+      # (requires_ggml_sonames), and validation wires the bundle against it.
+      - name: Fetch the paired llama cpu bundle
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p llama_cpu
+          LT='${{ inputs.llama_tag }}'
+          curl -fsSL --retry 3 -o llama-cpu.zip \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/app-${LT}-windows-${{ matrix.arch }}-cpu.zip"
+          # python -m zipfile instead of 7z: present on both x64 and arm runners.
+          python -m zipfile -e llama-cpu.zip llama_cpu
+
       - name: Package slim bundle
         env:
           SLIM: "1"
           LLAMA_TAG: ${{ inputs.llama_tag }}
           LLAMA_GGML_TREE: ${{ inputs.llama_ggml_tree }}
+          LLAMA_CPU_DIR: ${{ github.workspace }}/llama_cpu
           OS: windows
           ARCH: ${{ matrix.arch }}
           ACCEL: slim
@@ -389,13 +411,9 @@ jobs:
         shell: bash
         run: |
           set -eux
-          mkdir -p bundle model llama_cpu
+          mkdir -p bundle model
           # python -m zipfile instead of 7z: present on both x64 and arm runners.
           python -m zipfile -e "dist/whisper-${{ inputs.tag }}-windows-${{ matrix.arch }}-slim.zip" bundle
-          LT='${{ inputs.llama_tag }}'
-          curl -fsSL --retry 3 -o llama-cpu.zip \
-            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/app-${LT}-windows-${{ matrix.arch }}-cpu.zip"
-          python -m zipfile -e llama-cpu.zip llama_cpu
           curl -fsSL "$WHISPER_MODEL_URL" -o model/ggml-tiny.en.bin
           python tooling/scripts/validate_bundle.py \
             --bundle bundle --model model/ggml-tiny.en.bin --audio src/samples/jfk.wav \
@@ -430,7 +448,9 @@ jobs:
           - arch: arm64
             runner: macos-26
             expect_arch: arm64
-            deploy_target: "14.0"
+            # Same floor as the paired llama arm64 bundle; a higher one makes the
+            # installer reject whisper on a macOS that llama itself runs on.
+            deploy_target: "13.3"
             ggml_sonames: "libggml.0.dylib,libggml-base.0.dylib,libggml-cpu.0.dylib,libggml-blas.0.dylib,libggml-metal.0.dylib,libggml-rpc.0.dylib"
           - arch: x64
             runner: macos-15-intel
@@ -456,12 +476,10 @@ jobs:
           set -eux
           LT='${{ inputs.llama_tag }}'
           mkdir -p llama_src
-          if curl -fsSL --retry 3 -o llama-src.tar.gz \
-               "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"; then
-            tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
-          else
-            git clone --depth 1 --branch "$LT" https://github.com/unslothai/llama.cpp llama_src
-          fi
+          # The release's own source asset only; see the Linux job.
+          curl -fsSL --retry 3 -o llama-src.tar.gz \
+            "https://github.com/unslothai/llama.cpp/releases/download/${LT}/llama.cpp-source-${LT}.tar.gz"
+          tar -xzf llama-src.tar.gz -C llama_src --strip-components=1
           [ -f llama_src/ggml/CMakeLists.txt ] || { echo "llama source has no ggml/ tree" >&2; exit 1; }
           rm -rf src/ggml
           cp -a llama_src/ggml src/ggml
@@ -487,6 +505,7 @@ jobs:
             -DWHISPER_BUILD_EXAMPLES=ON \
             -DWHISPER_BUILD_SERVER=ON \
             -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_IS_DEV=OFF \
             -DWHISPER_SDL2=OFF \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.deploy_target }} \
             -DCMAKE_INSTALL_RPATH='@loader_path' \
