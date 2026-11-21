@@ -431,12 +431,12 @@ jobs:
             runner: macos-26
             expect_arch: arm64
             deploy_target: "14.0"
-            ggml_sonames: "libggml.0.dylib,libggml-base.0.dylib,libggml-cpu.0.dylib,libggml-blas.0.dylib,libggml-metal.0.dylib,libggml-rpc.0.dylib"
+            ggml_sonames: "libggml.{major}.dylib,libggml-base.{major}.dylib,libggml-cpu.{major}.dylib,libggml-blas.{major}.dylib,libggml-metal.{major}.dylib,libggml-rpc.{major}.dylib"
           - arch: x64
             runner: macos-15-intel
             expect_arch: x86_64
             deploy_target: "13.3"
-            ggml_sonames: "libggml.0.dylib,libggml-base.0.dylib,libggml-cpu.0.dylib,libggml-blas.0.dylib,libggml-rpc.0.dylib"
+            ggml_sonames: "libggml.{major}.dylib,libggml-base.{major}.dylib,libggml-cpu.{major}.dylib,libggml-blas.{major}.dylib,libggml-rpc.{major}.dylib"
     steps:
       - name: Checkout build tooling (this repo)
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
@@ -521,7 +521,10 @@ jobs:
             | awk '$1 ~ /ggml/ {print $1}' | sort -u)"
           echo "ggml install-name references:"; echo "$REFS"
           [ -n "$REFS" ] || { echo "ERROR: no ggml references found (unexpected for a shared build)" >&2; exit 1; }
-          IFS=',' read -ra WANT <<< '${{ matrix.ggml_sonames }}'
+          # {major} is ggml's SOVERSION (GGML_VERSION_MAJOR), the same expansion package_bundle.py does.
+          WANT_LIST='${{ matrix.ggml_sonames }}'
+          WANT_LIST="${WANT_LIST//\{major\}/${GGML_VERSION%%.*}}"
+          IFS=',' read -ra WANT <<< "$WANT_LIST"
           while IFS= read -r ref; do
             case "$ref" in @rpath/*) ;; *) echo "ERROR: non-@rpath ggml reference: $ref" >&2; exit 1 ;; esac
             name="${ref#@rpath/}"

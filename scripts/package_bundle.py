@@ -117,6 +117,12 @@ def sha256_file(path: Path) -> str:
 # --------------------------------------------------------------------------- #
 # Platform strategies
 # --------------------------------------------------------------------------- #
+def expand_sonames(names, ggml_version: str) -> tuple[str, ...]:
+    """Fill "{major}" with ggml's major version, which ggml uses as its SOVERSION."""
+    major = ggml_version.split(".")[0]
+    return tuple(n.replace("{major}", major) for n in names)
+
+
 class PlatformStrategy:
     name = "generic"
     exe_suffix = ""
@@ -130,7 +136,8 @@ class PlatformStrategy:
     # GGML_SONAMES env / --ggml-sonames flag overrides the default list (used
     # on macOS, where the contract differs per arch: x64 has no metal dylib).
     whisper_lib_patterns = ("libwhisper.so*",)
-    ggml_sonames = ("libggml.so.0", "libggml-base.so.0")
+    # "{major}" is ggml's SOVERSION, GGML_VERSION_MAJOR (0 before ggml 1.0.0, 1 after).
+    ggml_sonames = ("libggml.so.{major}", "libggml-base.so.{major}")
     # The OpenMP runtime is part of the same contract wherever llama's slice is
     # clang-built: its ggml-base links against the LLVM runtime and ships it
     # INSIDE the bundle (never a system library), so the installer has to wire
@@ -139,9 +146,9 @@ class PlatformStrategy:
     # ship no libomp: they resolve libgomp from the host, or use no OpenMP.
     openmp_sonames: dict[str, tuple[str, ...]] = {}
 
-    def sonames_for(self, arch: str) -> tuple[str, ...]:
+    def sonames_for(self, arch: str, ggml_version: str) -> tuple[str, ...]:
         """The full lib-in-same-dir contract for this os/arch."""
-        return tuple(self.ggml_sonames) + self.openmp_sonames.get(arch, ())
+        return expand_sonames(self.ggml_sonames, ggml_version) + self.openmp_sonames.get(arch, ())
 
     def server_name(self) -> str:
         return "whisper-server" + self.exe_suffix
@@ -201,7 +208,7 @@ class MacOSStrategy(PlatformStrategy):
     # paired llama macos bundles carry statically-registered backend dylibs
     # (cpu/blas/metal/rpc) that llama's libggml.0.dylib itself loads via
     # @rpath, so dyld needs those names in the bin dir too.
-    ggml_sonames = ("libggml.0.dylib", "libggml-base.0.dylib")
+    ggml_sonames = ("libggml.{major}.dylib", "libggml-base.{major}.dylib")
 
     def local_needed(self, path: Path, bin_dir: Path) -> list[str]:
         out = _run(["otool", "-L", str(path)])
@@ -464,8 +471,9 @@ def write_metadata(stage: Path, strategy: PlatformStrategy, cfg: dict, asset: st
             "requires_ggml_tree": cfg.get("llama_ggml_tree") or None,
             "requires_ggml_commit": paired_ggml_commit(cfg["llama_tag"]),
             "requires_ggml_version": cfg["ggml_version"],
-            "requires_ggml_sonames": list(cfg.get("ggml_sonames")
-                                          or strategy.sonames_for(cfg["arch"])),
+            "requires_ggml_sonames": list(
+                expand_sonames(cfg["ggml_sonames"], cfg["ggml_version"]) if cfg.get("ggml_sonames")
+                else strategy.sonames_for(cfg["arch"], cfg["ggml_version"])),
             "ggml_source": f"unslothai/llama.cpp@{cfg['llama_tag']}:/ggml",
         })
     (stage / INFO_NAME).write_text(json.dumps(info, indent=2))
