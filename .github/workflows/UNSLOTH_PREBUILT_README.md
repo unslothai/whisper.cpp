@@ -183,8 +183,8 @@ Each release also carries:
       "sha256": "<hex>",
       "requires_llama_tag": "<llama_tag>",
       "requires_ggml_commit": "<ggml_commit>",
-      "requires_ggml_version": "0.17.0",
-      "requires_ggml_sonames": ["libggml.so.0", "libggml-base.so.0"]
+      "requires_ggml_version": "1.0.0",
+      "requires_ggml_sonames": ["libggml.so.1", "libggml-base.so.1"]
     }
   ]
 }
@@ -193,13 +193,15 @@ Each release also carries:
 Every published entry is a slim entry: exactly one per os/arch with
 `backend: "slim"` (the consumer maps any accel, including cpu and metal, onto
 it; there are no per-accel slim entries). `requires_ggml_sonames` is
-per-platform and per-arch: `["libggml.so.0", "libggml-base.so.0"]` on Linux
+per-platform and per-arch: `["libggml.so.N", "libggml-base.so.N"]` on Linux
 x64 and the same plus `libomp.so.5` on Linux arm64, `["ggml.dll",
 "ggml-base.dll", "libomp140.<arch>.dll"]` on Windows, and on macOS the full
-dylib closure the loader needs (`libggml.0.dylib`, `libggml-base.0.dylib`,
-`libggml-cpu.0.dylib`, `libggml-blas.0.dylib`, `libggml-rpc.0.dylib`, plus
-`libggml-metal.0.dylib` on arm64; Apple clang builds no OpenMP, so no `libomp`
-entry there). The lists come from the platform strategies in
+dylib closure the loader needs (`libggml.N.dylib`, `libggml-base.N.dylib`,
+`libggml-cpu.N.dylib`, `libggml-blas.N.dylib`, `libggml-rpc.N.dylib`, plus
+`libggml-metal.N.dylib` on arm64; Apple clang builds no OpenMP, so no `libomp`
+entry there). `N` is ggml's SOVERSION, the major of `GGML_VERSION` (0 before
+ggml 1.0.0, 1 from it): the strategies and the macOS matrix write it as
+`{major}` and `package_bundle.py` fills it in. The lists come from the platform strategies in
 `package_bundle.py`; `GGML_SONAMES` still overrides them, as the macOS jobs do. `min_os` follows the platform convention: `glibc-2.35`, `windows-10`,
 `macos-14.0` (arm64) / `macos-13.3` (x64). The manifest's top level records the
 pairing as `paired_llama_tag` and its ggml commit as `paired_ggml_commit`.
