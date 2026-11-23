@@ -125,7 +125,7 @@ installer pairs on that ggml commit, not the whole tag, so a newer llama build
 that keeps the same ggml still backs the bundle. `requires_ggml_sonames` is the exact list
 of library filenames that must exist in the paired llama bin dir for the loader
 to bring the bundle up in a lib-in-same-dir layout (on macOS this includes the
-backend dylibs that llama's `libggml.0.dylib` itself loads via `@rpath`).
+backend dylibs that llama's `libggml.<major>.dylib` itself loads via `@rpath`).
 
 CI validates each slim bundle on its free runner with the exact consumer
 wiring (`validate_bundle.py --ggml-dir`): Linux/Windows x64 against the
@@ -193,7 +193,8 @@ Each release also carries:
 Every published entry is a slim entry: exactly one per os/arch with
 `backend: "slim"` (the consumer maps any accel, including cpu and metal, onto
 it; there are no per-accel slim entries). `requires_ggml_sonames` is
-per-platform and per-arch: `["libggml.so.0", "libggml-base.so.0"]` on Linux
+per-platform and per-arch, with the soname major taken from `requires_ggml_version`
+(ggml 0.x gives `.so.0` / `.0.dylib`, ggml 1.x gives `.so.1` / `.1.dylib`): `["libggml.so.0", "libggml-base.so.0"]` on Linux
 x64 and the same plus `libomp.so.5` on Linux arm64, `["ggml.dll",
 "ggml-base.dll", "libomp140.<arch>.dll"]` on Windows, and on macOS the full
 dylib closure the loader needs (`libggml.0.dylib`, `libggml-base.0.dylib`,

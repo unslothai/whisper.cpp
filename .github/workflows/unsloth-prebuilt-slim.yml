@@ -414,8 +414,9 @@ jobs:
     # macos-15-intel x64, pinned deployment targets) but compiles NO backend
     # into whisper itself: Metal/CoreML are OFF and the single in-tree CPU
     # backend exists only to link the build (SLIM packaging discards it). At
-    # runtime the paired llama.cpp macos bundle provides libggml.0.dylib and
-    # its statically-registered cpu/blas/metal(/rpc) backend dylibs; whisper
+    # runtime the paired llama.cpp macos bundle provides libggml.{M}.dylib and
+    # its statically-registered cpu/blas/metal(/rpc) backend dylibs ({M} below is
+    # the ggml soname major from GGML_VERSION: libggml.1.dylib for ggml 1.x); whisper
     # references them as @rpath/<name> resolved via the @loader_path rpath, so
     # the installer's dylib-in-same-dir layout works. ggml_sonames is the exact
     # per-arch contract list stamped into requires_ggml_sonames: every dylib
@@ -431,12 +432,12 @@ jobs:
             runner: macos-26
             expect_arch: arm64
             deploy_target: "14.0"
-            ggml_sonames: "libggml.0.dylib,libggml-base.0.dylib,libggml-cpu.0.dylib,libggml-blas.0.dylib,libggml-metal.0.dylib,libggml-rpc.0.dylib"
+            ggml_sonames: "libggml.{M}.dylib,libggml-base.{M}.dylib,libggml-cpu.{M}.dylib,libggml-blas.{M}.dylib,libggml-metal.{M}.dylib,libggml-rpc.{M}.dylib"
           - arch: x64
             runner: macos-15-intel
             expect_arch: x86_64
             deploy_target: "13.3"
-            ggml_sonames: "libggml.0.dylib,libggml-base.0.dylib,libggml-cpu.0.dylib,libggml-blas.0.dylib,libggml-rpc.0.dylib"
+            ggml_sonames: "libggml.{M}.dylib,libggml-base.{M}.dylib,libggml-cpu.{M}.dylib,libggml-blas.{M}.dylib,libggml-rpc.{M}.dylib"
     steps:
       - name: Checkout build tooling (this repo)
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
@@ -521,7 +522,8 @@ jobs:
             | awk '$1 ~ /ggml/ {print $1}' | sort -u)"
           echo "ggml install-name references:"; echo "$REFS"
           [ -n "$REFS" ] || { echo "ERROR: no ggml references found (unexpected for a shared build)" >&2; exit 1; }
-          IFS=',' read -ra WANT <<< '${{ matrix.ggml_sonames }}'
+          WANT_RAW='${{ matrix.ggml_sonames }}'
+          IFS=',' read -ra WANT <<< "${WANT_RAW//\{M\}/${GGML_VERSION%%.*}}"
           while IFS= read -r ref; do
             case "$ref" in @rpath/*) ;; *) echo "ERROR: non-@rpath ggml reference: $ref" >&2; exit 1 ;; esac
             name="${ref#@rpath/}"

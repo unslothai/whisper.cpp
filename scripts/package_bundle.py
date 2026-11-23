@@ -114,6 +114,11 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def expand_sonames(names, ggml_major: str) -> tuple[str, ...]:
+    """Fill the {M} soname-major placeholder; names without it (Windows DLLs, libomp) pass through."""
+    return tuple(n.replace("{M}", ggml_major) for n in names)
+
+
 # --------------------------------------------------------------------------- #
 # Platform strategies
 # --------------------------------------------------------------------------- #
@@ -130,7 +135,8 @@ class PlatformStrategy:
     # GGML_SONAMES env / --ggml-sonames flag overrides the default list (used
     # on macOS, where the contract differs per arch: x64 has no metal dylib).
     whisper_lib_patterns = ("libwhisper.so*",)
-    ggml_sonames = ("libggml.so.0", "libggml-base.so.0")
+    # {M} is the ggml soname major, taken from GGML_VERSION (ggml 1.x ships libggml.so.1).
+    ggml_sonames = ("libggml.so.{M}", "libggml-base.so.{M}")
     # The OpenMP runtime is part of the same contract wherever llama's slice is
     # clang-built: its ggml-base links against the LLVM runtime and ships it
     # INSIDE the bundle (never a system library), so the installer has to wire
@@ -139,9 +145,9 @@ class PlatformStrategy:
     # ship no libomp: they resolve libgomp from the host, or use no OpenMP.
     openmp_sonames: dict[str, tuple[str, ...]] = {}
 
-    def sonames_for(self, arch: str) -> tuple[str, ...]:
+    def sonames_for(self, arch: str, ggml_major: str) -> tuple[str, ...]:
         """The full lib-in-same-dir contract for this os/arch."""
-        return tuple(self.ggml_sonames) + self.openmp_sonames.get(arch, ())
+        return expand_sonames(self.ggml_sonames, ggml_major) + self.openmp_sonames.get(arch, ())
 
     def server_name(self) -> str:
         return "whisper-server" + self.exe_suffix
@@ -199,9 +205,9 @@ class MacOSStrategy(PlatformStrategy):
     # Direct references only (what whisper-server/libwhisper link). The slim
     # macOS jobs pass GGML_SONAMES with the full per-arch closure instead: the
     # paired llama macos bundles carry statically-registered backend dylibs
-    # (cpu/blas/metal/rpc) that llama's libggml.0.dylib itself loads via
+    # (cpu/blas/metal/rpc) that llama's libggml.{M}.dylib itself loads via
     # @rpath, so dyld needs those names in the bin dir too.
-    ggml_sonames = ("libggml.0.dylib", "libggml-base.0.dylib")
+    ggml_sonames = ("libggml.{M}.dylib", "libggml-base.{M}.dylib")
 
     def local_needed(self, path: Path, bin_dir: Path) -> list[str]:
         out = _run(["otool", "-L", str(path)])
@@ -464,8 +470,10 @@ def write_metadata(stage: Path, strategy: PlatformStrategy, cfg: dict, asset: st
             "requires_ggml_tree": cfg.get("llama_ggml_tree") or None,
             "requires_ggml_commit": paired_ggml_commit(cfg["llama_tag"]),
             "requires_ggml_version": cfg["ggml_version"],
-            "requires_ggml_sonames": list(cfg.get("ggml_sonames")
-                                          or strategy.sonames_for(cfg["arch"])),
+            "requires_ggml_sonames": list(
+                expand_sonames(cfg["ggml_sonames"], cfg["ggml_version"].split(".")[0])
+                if cfg.get("ggml_sonames")
+                else strategy.sonames_for(cfg["arch"], cfg["ggml_version"].split(".")[0])),
             "ggml_source": f"unslothai/llama.cpp@{cfg['llama_tag']}:/ggml",
         })
     (stage / INFO_NAME).write_text(json.dumps(info, indent=2))
